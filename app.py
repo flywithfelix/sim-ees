@@ -5,7 +5,8 @@ import streamlit as st
 import plotly.graph_objects as go
 
 from simulation import SimConfig, run_simulation
-from service_times import (
+from passenger_data import (
+    DEFAULT_MIX,
     MEAN_SSS_VH_REG_S, SD_SSS_VH_REG_S, MEAN_SSS_VH_UNREG_S, SD_SSS_VH_UNREG_S,
     MEAN_SSS_VE_REG_S, SD_SSS_VE_REG_S, MEAN_SSS_VE_UNREG_S, SD_SSS_VE_UNREG_S,
     MEAN_TCN_VH_REG_S_SSS_ENABLED, SD_TCN_VH_REG_S_SSS_ENABLED, MEAN_TCN_VH_UNREG_S_SSS_ENABLED, SD_TCN_VH_UNREG_S_SSS_ENABLED,
@@ -20,14 +21,6 @@ from typ4_defaults import DEFAULT_EPAX_BY_TYP4
 # =========================================================
 # Passagiermix – Defaults & Reset
 # =========================================================
-DEFAULT_MIX = {
-    "mix_easypass": 49,
-    "mix_eu_manual": 21,
-    "mix_tcn_at": 15,
-    "mix_tcn_vh": 7,
-    "mix_tcn_ve": 8,
-}
-
 # Initialisiere den Session-State nur, wenn Keys fehlen
 def init_mix_state():
     for key, val in DEFAULT_MIX.items():
