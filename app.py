@@ -400,7 +400,7 @@ st.set_page_config(page_title="SIM EES", layout="wide")
 st.title("Simulation des EES-Prozesses am Flughafen")
 
 uploaded = st.file_uploader(
-    "Flugplan hochladen (CSV oder XLSX, Spalten: SIBT, FLN, PPOS, PK, EPAX, Typ4, T, [APAX], [ADEP3])",
+    "Flugplan hochladen (CSV oder XLSX, Pflichtspalten: SIBT, FLN, ADEP3, PPOS, Typ4, PK, EPAX, APAX, T, PK )",
     type=["csv", "xlsx"],
 )
 if uploaded is None:
