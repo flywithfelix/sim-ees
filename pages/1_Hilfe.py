@@ -14,5 +14,6 @@ Weitere Informationen folgen in Kürze.
 """)
 
 st.markdown("---")
-if st.button("⬅️ Zurück zur Startseite", use_container_width=True):
-    st.switch_page("Startseite.py")
+if st.button("⬅️ Zurück zur Simulation", use_container_width=True):
+    st.switch_page("Simulation.py")
+
