@@ -6,12 +6,10 @@ import streamlit as st
 from engine import SimConfig, run_simulation
 from passenger_data import (
     DEFAULT_MIX,
-    MEAN_SSS_VH_REG_S, SD_SSS_VH_REG_S, MEAN_SSS_VH_UNREG_S, SD_SSS_VH_UNREG_S,
-    MEAN_SSS_VE_REG_S, SD_SSS_VE_REG_S, MEAN_SSS_VE_UNREG_S, SD_SSS_VE_UNREG_S,
-    MEAN_TCN_VH_REG_S_SSS_ENABLED, SD_TCN_VH_REG_S_SSS_ENABLED, MEAN_TCN_VH_UNREG_S_SSS_ENABLED, SD_TCN_VH_UNREG_S_SSS_ENABLED,
-    MEAN_TCN_VH_REG_S_SSS_DISABLED, SD_TCN_VH_REG_S_SSS_DISABLED, MEAN_TCN_VH_UNREG_S_SSS_DISABLED, SD_TCN_VH_UNREG_S_SSS_DISABLED,
-    MEAN_TCN_VE_REG_S_SSS_ENABLED, SD_TCN_VE_REG_S_SSS_ENABLED, MEAN_TCN_VE_UNREG_S_SSS_ENABLED, SD_TCN_VE_UNREG_S_SSS_ENABLED,
-    MEAN_TCN_VE_REG_S_SSS_DISABLED, SD_TCN_VE_REG_S_SSS_DISABLED, MEAN_TCN_VE_UNREG_S_SSS_DISABLED, SD_TCN_VE_UNREG_S_SSS_DISABLED,
+    MEAN_SSS_S, SD_SSS_S,
+    MU_TCN_V_REG_S_SSS_ENABLED, SIGMA_TCN_V_REG_S_SSS_ENABLED, MU_TCN_V_UNREG_S_SSS_ENABLED, SIGMA_TCN_V_UNREG_S_SSS_ENABLED,
+    MU_TCN_V_REG_S_SSS_DISABLED, SIGMA_TCN_V_REG_S_SSS_DISABLED, MU_TCN_V_UNREG_S_SSS_DISABLED, SIGMA_TCN_V_UNREG_S_SSS_DISABLED,
+    MAX_TCN_V_S,
     MEAN_EASYPASS_S, SD_EASYPASS_S, MEAN_EU_S, SD_EU_S,
 )
 from typ4_defaults import DEFAULT_EPAX_BY_TYP4
@@ -29,15 +27,14 @@ from session_state_init import init_session_state
 # =========================================================
 def read_csv_auto(uploaded) -> pd.DataFrame:
     # Liest eine hochgeladene Tabellendatei ein.
-    # Erkennt XLSX/XLS anhand des Dateinamens oder Content-Type und nutzt
-    # `pd.read_excel`. Für CSV wird versucht, verschiedene Trennzeichen zu verwenden.
+    # Erkennt XLSX anhand des Dateinamens und nutzt `pd.read_excel`.
+    # Für CSV wird versucht, verschiedene Trennzeichen zu verwenden.
     # `uploaded` ist das von Streamlit hochgeladene File-like-Objekt; wir setzen den
     # Stream vor jedem Versuch zurück (seek), falls verfügbar.
     name = getattr(uploaded, "name", "") or ""
-    ctype = getattr(uploaded, "type", "") or ""
 
     # Excel-Erkennung
-    if name.lower().endswith((".xlsx", ".xls")) or "excel" in ctype.lower():
+    if name.lower().endswith(".xlsx"):
         if hasattr(uploaded, "seek"):
             uploaded.seek(0)
         return pd.read_excel(uploaded)
@@ -188,14 +185,14 @@ st.session_state["_settings_loaded"] = False
 
 
 def clear_results():
-    keys = ["last_df_res_t1", "last_df_res_t2", "last_t0", "last_df_selected", "last_cfg_t1", "last_cfg_t2"]
+    keys = ["last_df_res_t1", "last_df_res_t2", "last_t0", "last_df_selected", "last_cfg_t1", "last_cfg_t2", "edited_df"]
     for k in keys:
         st.session_state.pop(k, None)
 
 # Visual frame for upload section using expander (always expanded)
 with st.expander("📋 Flugplan importieren", expanded=True):
     uploaded = st.file_uploader(
-        "Flugplan hochladen (CSV oder XLSX, Pflichtspalten: SIBT, FLN, ADEP3, PPOS, Typ4, PK, EPAX, APAX, T, PK )",
+        "Flugplan hochladen (CSV oder XLSX, Pflichtspalten: SIBT, FLN, ADEP3, PPOS, Typ4, EPAX, APAX, T, PK )",
         type=["csv", "xlsx"],
         key="flight_plan_uploader",
     )
@@ -236,30 +233,60 @@ if not fln_all:
 # =========================================================
 # Main Page Controls (FLN & Start)
 # =========================================================
+st.subheader("Flüge für Simulation auswählen")
 
-# FLN Auswahl direkt auf der Startseite (da datenabhängig)
-st.subheader("Simulation konfigurieren")
-fln_selected = st.multiselect("Flugnummern (FLN) auswählen", options=fln_all, default=fln_all)
+# Warnen, wenn für einige Zeilen weder APAX noch EPAX vorhanden waren und Default verwendet wurde
+if "APAX" in df_all.columns:
+    fallback_mask_all = df_all["APAX"].isna() & df_all["EPAX"].isna()
+else:
+    fallback_mask_all = df_all["EPAX"].isna()
+fallback_count_all = int(fallback_mask_all.sum())
 
-st.info("Um die Simulation zu starten, klicke auf den Button **▶️ Simulation starten** in der Seitenleiste.")
+if fallback_count_all > 0:
+    st.warning(f"{fallback_count_all} Flüge ohne APAX/EPAX — Standardwert für Passagierzahl wird verwendet.")
+
+# Prepare dataframe for editor. Add a 'select' column.
+# Reset if the underlying file has changed (by checking if 'edited_df' is missing).
+if "edited_df" not in st.session_state:
+    df_editable = df_all.copy()
+    df_editable.insert(0, "Aktiv", True)
+    st.session_state["edited_df"] = df_editable
+
+# Get a list of columns to disable, all except the selection column
+disabled_cols = [c for c in df_all.columns] # disable original columns
+
+edited_df = st.data_editor(
+    st.session_state["edited_df"],
+    disabled=disabled_cols,
+    hide_index=True,
+    column_config={
+        "SIBT": st.column_config.DatetimeColumn(
+            "SIBT",
+            format="DD.MM.YYYY HH:mm",
+        ),
+        "Aktiv": st.column_config.CheckboxColumn(
+            "Aktiv",
+            default=True,
+        )
+    },
+    width="stretch"
+)
+st.session_state["edited_df"] = edited_df
+
+# Get selected flights from the editor
+df_selected_from_editor = edited_df[edited_df["Aktiv"]]
+fln_selected = sorted(df_selected_from_editor["FLN"].unique().tolist())
 
 # Check the _run_simulation flag from sidebar button
 run_btn = st.session_state.get("_run_simulation", False)
-
 
 # =========================================================
 # Relevante Flüge nach FLN
 # =========================================================
 flights, t0, df_selected, fallback_count = flights_to_sim_input(df_all, fln_selected)
-st.subheader("In die Simulation eingehende Flüge (nach FLN-Auswahl)")
-# Formatiere SIBT für Anzeige (europäisches Format TT.MM.YYYY HH:MM)
-df_selected_display = df_selected.copy()
-df_selected_display["SIBT"] = df_selected_display["SIBT"].dt.strftime("%d.%m.%Y %H:%M")
-st.dataframe(df_selected_display, width="stretch")
 
-# Warnen, wenn für einige Zeilen weder APAX noch EPAX vorhanden waren und Default verwendet wurde
-if fallback_count > 0:
-    st.warning(f"{fallback_count} Flüge ohne APAX/EPAX — Standardwert verwendet.")
+# Display count of selected flights
+st.caption(f"{len(df_selected)} von {len(df_all)} Flügen für die Simulation ausgewählt.")
 
 if not flights:
     st.warning("Keine Flüge nach FLN-Auswahl.")
@@ -277,8 +304,7 @@ if run_btn:
         st.session_state["mix_easypass"] +
         st.session_state["mix_eu_manual"] +
         st.session_state["mix_tcn_at"] +
-        st.session_state["mix_tcn_vh"] +
-        st.session_state["mix_tcn_ve"]
+        st.session_state["mix_tcn_v"]
     )
     if mix_sum != 100:
         st.error("Passagiermix muss exakt 100% ergeben.")
@@ -287,60 +313,58 @@ if run_btn:
     # Werte aus Session State lesen
     process_time_scale = st.session_state["process_time_scale_pct"] / 100.0
     ees_choice = st.session_state["ees_choice"]
-    ees_registered_share = {"100:0": 1.0, "75:25": 0.75, "50:50": 0.5, "0:100": 0.0}[ees_choice]
+    ees_registered_share = {"100:0": 1.0, "75:25": 0.75, "50:50": 0.5, "0:100": 0.0}.get(ees_choice, 0.0)
+
+    intervals = ["06-09", "09-12", "12-15", "15-18", "18-21", "21-00"]
+    cap_tcn_schedule_t1 = {interval: st.session_state[f"cap_tcn_t1_{interval}"] for interval in intervals}
+    cap_tcn_schedule_t2 = {interval: st.session_state[f"cap_tcn_t2_{interval}"] for interval in intervals}
 
     # Gemeinsame Parameter für beide Terminals
     sim_params = dict(
         deboard_offset_min=st.session_state["deboard_offset_min"],
         deboard_window_min=st.session_state["deboard_window_min"],
+        changeover_s=st.session_state["changeover_s"],
         walk_speed_mean_mps=st.session_state["walk_speed_mean_mps"],
         walk_speed_sd_mps=st.session_state["walk_speed_sd_mps"],
         walk_speed_floor_mps=st.session_state["walk_speed_floor_mps"],
+        bus_capacity=st.session_state["bus_capacity"],
+        bus_fill_time_min=st.session_state["bus_fill_time_min"],
+        bus_travel_time_min=st.session_state["bus_travel_time_min"],
         share_easypass=st.session_state["mix_easypass"] / 100.0,
         share_eu_manual=st.session_state["mix_eu_manual"] / 100.0,
         share_tcn_at=st.session_state["mix_tcn_at"] / 100.0,
-        share_tcn_vh=st.session_state["mix_tcn_vh"] / 100.0,
-        share_tcn_ve=st.session_state["mix_tcn_ve"] / 100.0,
-        tcn_at_policy=st.session_state["tcn_at_policy"],
+        share_tcn_v=st.session_state["mix_tcn_v"] / 100.0,
+        tcn_at_target=st.session_state["tcn_at_target"],
         ees_registered_share=ees_registered_share,
         mean_easypass_s=st.session_state["mean_easypass_s"] * process_time_scale,
         sd_easypass_s=st.session_state["sd_easypass_s"] * process_time_scale,
         mean_eu_s=st.session_state["mean_eu_s"] * process_time_scale,
         sd_eu_s=st.session_state["sd_eu_s"] * process_time_scale,
-        mean_sss_vh_reg_s=st.session_state["mean_sss_vh_reg_s"] * process_time_scale,
-        sd_sss_vh_reg_s=st.session_state["sd_sss_vh_reg_s"] * process_time_scale,
-        mean_sss_vh_unreg_s=st.session_state["mean_sss_vh_unreg_s"] * process_time_scale,
-        sd_sss_vh_unreg_s=st.session_state["sd_sss_vh_unreg_s"] * process_time_scale,
-        mean_sss_ve_reg_s=st.session_state["mean_sss_ve_reg_s"] * process_time_scale,
-        sd_sss_ve_reg_s=st.session_state["sd_sss_ve_reg_s"] * process_time_scale,
-        mean_sss_ve_unreg_s=st.session_state["mean_sss_ve_unreg_s"] * process_time_scale,
-        sd_sss_ve_unreg_s=st.session_state["sd_sss_ve_unreg_s"] * process_time_scale,
-        mean_tcn_vh_reg_s=st.session_state["mean_tcn_vh_reg_s"] * process_time_scale,
-        sd_tcn_vh_reg_s=st.session_state["sd_tcn_vh_reg_s"] * process_time_scale,
-        mean_tcn_vh_unreg_s=st.session_state["mean_tcn_vh_unreg_s"] * process_time_scale,
-        sd_tcn_vh_unreg_s=st.session_state["sd_tcn_vh_unreg_s"] * process_time_scale,
-        mean_tcn_ve_reg_s=st.session_state["mean_tcn_ve_reg_s"] * process_time_scale,
-        sd_tcn_ve_reg_s=st.session_state["sd_tcn_ve_reg_s"] * process_time_scale,
-        mean_tcn_ve_unreg_s=st.session_state["mean_tcn_ve_unreg_s"] * process_time_scale,
-        sd_tcn_ve_unreg_s=st.session_state["sd_tcn_ve_unreg_s"] * process_time_scale,
+        mean_sss_s=st.session_state["mean_sss_s"] * process_time_scale,
+        sd_sss_s=st.session_state["sd_sss_s"] * process_time_scale,
+        mu_tcn_v_reg_s=st.session_state["mu_tcn_v_reg_s"],
+        sigma_tcn_v_reg_s=st.session_state["sigma_tcn_v_reg_s"],
+        mu_tcn_v_unreg_s=st.session_state["mu_tcn_v_unreg_s"],
+        sigma_tcn_v_unreg_s=st.session_state["sigma_tcn_v_unreg_s"],
+        max_tcn_v_s=st.session_state["max_tcn_v_s"] * process_time_scale,
     )
 
     # Konfiguration T1
     cfg_t1 = SimConfig(
+        cap_tcn_schedule=cap_tcn_schedule_t1,
         cap_sss=(st.session_state["cap_sss_t1"] if st.session_state["sss_enabled_t1"] else 0),
         cap_easypass=st.session_state["cap_easypass_t1"],
         cap_eu=st.session_state["cap_eu_t1"],
-        cap_tcn=st.session_state["cap_tcn_t1"],
         sss_enabled=st.session_state["sss_enabled_t1"],
         **sim_params
     )
 
     # Konfiguration T2
     cfg_t2 = SimConfig(
+        cap_tcn_schedule=cap_tcn_schedule_t2,
         cap_sss=(st.session_state["cap_sss"] if st.session_state["sss_enabled_t2"] else 0),
         cap_easypass=st.session_state["cap_easypass"],
         cap_eu=st.session_state["cap_eu"],
-        cap_tcn=st.session_state["cap_tcn"],
         sss_enabled=st.session_state["sss_enabled_t2"],
         **sim_params
     )
@@ -349,39 +373,25 @@ if run_btn:
     flights_t1 = [f for f in flights if f["terminal"] == "T1"]
     flights_t2 = [f for f in flights if f["terminal"] == "T2"]
 
-    # Simulationen ausführen (Schleife über Anzahl der Runs)
-    n_runs = st.session_state.get("sim_runs", 1)
-    base_seed = int(st.session_state["seed"])
-    
-    results_t1_list = []
-    ts_t1_list = []
-    results_t2_list = []
-    ts_t2_list = []
-    
-    progress_bar = st.progress(0)
-    
-    for i in range(n_runs):
-        run_seed = base_seed + i
+    with st.spinner("Simulation läuft..."):
+        # Simulationen ausführen
+        run_seed = int(st.session_state["seed"])
         
         # Run T1
-        m1 = run_simulation(flights_t1, cfg_t1, seed=run_seed)
-        results_t1_list.extend([r.__dict__ for r in m1.results])
-        ts_t1_list.extend(m1.queue_ts)
+        m1 = run_simulation(flights_t1, cfg_t1, t0, seed=run_seed)
+        results_t1 = [r.__dict__ for r in m1.results]
+        ts_t1 = m1.queue_ts
         
         # Run T2
-        m2 = run_simulation(flights_t2, cfg_t2, seed=run_seed)
-        results_t2_list.extend([r.__dict__ for r in m2.results])
-        ts_t2_list.extend(m2.queue_ts)
-        
-        progress_bar.progress((i + 1) / n_runs)
-    
-    progress_bar.empty()
+        m2 = run_simulation(flights_t2, cfg_t2, t0, seed=run_seed)
+        results_t2 = [r.__dict__ for r in m2.results]
+        ts_t2 = m2.queue_ts
 
     # Ergebnisse speichern (als DataFrames)
-    st.session_state["last_df_res_t1"] = pd.DataFrame(results_t1_list)
-    st.session_state["last_df_ts_t1"] = pd.DataFrame(ts_t1_list)
-    st.session_state["last_df_res_t2"] = pd.DataFrame(results_t2_list)
-    st.session_state["last_df_ts_t2"] = pd.DataFrame(ts_t2_list)
+    st.session_state["last_df_res_t1"] = pd.DataFrame(results_t1)
+    st.session_state["last_df_ts_t1"] = pd.DataFrame(ts_t1)
+    st.session_state["last_df_res_t2"] = pd.DataFrame(results_t2)
+    st.session_state["last_df_ts_t2"] = pd.DataFrame(ts_t2)
     
     # Config speichern (Referenz für Plots/Einstellungen)
     st.session_state["last_cfg_t1"] = cfg_t1
@@ -396,7 +406,7 @@ if run_btn:
 # =========================================================
 if "last_df_res_t1" in st.session_state and "last_df_res_t2" in st.session_state:
     st.markdown("---")
-    st.subheader("📊 Simulationsergebnisse")
+    st.header("Simulationsergebnisse")
     
     df_res_t1 = st.session_state["last_df_res_t1"]
     df_res_t2 = st.session_state["last_df_res_t2"]
@@ -421,13 +431,16 @@ if "last_df_res_t1" in st.session_state and "last_df_res_t2" in st.session_state
         # --- KPIs Metrics ---
         st.subheader("KPIs (Metriken)")
         
-        # Slider optisch über der entsprechenden Metrik (3. Spalte) platzieren
-        cs1, cs2, cs3, cs4 = st.columns(4)
-        with cs3:
-            kpi_thresh = st.select_slider("Schwellwert [min]", options=[10, 15, 20, 30], value=15)
+        # Slider für Schwellwert
+        kpi_thresh = st.select_slider("Schwellwert für Wartezeit [min]", options=[10, 15, 20, 30], value=15)
 
-        p95_wait = df_res["wait_total"].quantile(0.95)
-        mean_wait = df_res["wait_total"].mean()
+        # Berechnungen für KPIs
+        df_res_t1_filtered = df_res[df_res['terminal'] == 'T1']
+        df_res_t2_filtered = df_res[df_res['terminal'] == 'T2']
+        
+        p95_wait_t1 = df_res_t1_filtered["wait_total"].quantile(0.95) if not df_res_t1_filtered.empty else 0
+        p95_wait_t2 = df_res_t2_filtered["wait_total"].quantile(0.95) if not df_res_t2_filtered.empty else 0
+        pct_over = (df_res["wait_total"] > kpi_thresh).mean() * 100.0
 
         # Max Queue Helper
         def _get_max_q_info(df_ts):
@@ -451,28 +464,67 @@ if "last_df_res_t1" in st.session_state and "last_df_res_t2" in st.session_state
         mq_t1, t_t1, s_t1 = _get_max_q_info(st.session_state.get("last_df_ts_t1", pd.DataFrame()))
         mq_t2, t_t2, s_t2 = _get_max_q_info(st.session_state.get("last_df_ts_t2", pd.DataFrame()))
         
-        pct_over = (df_res["wait_total"] > kpi_thresh).mean() * 100.0
-
-        t_start = df_res["arrival_min"].min()
-        t_end = df_res["exit_min"].max()
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("P95 Wartezeit", f"{p95_wait:.1f} min")
-        c2.metric("Ø Wartezeit", f"{mean_wait:.1f} min")
+        # Anzeige der Haupt-KPIs
+        c1, c2, c3 = st.columns(3)
+        c1.metric("P95 Wartezeit T1", f"{p95_wait_t1:.1f} min")
+        c2.metric("P95 Wartezeit T2", f"{p95_wait_t2:.1f} min")
         c3.metric(f"% > {kpi_thresh} min", f"{pct_over:.1f} %")
-        c4.metric("Passagiere gesamt", f"{len(df_res):,}".replace(",", "."))
         
-        # Peaks je Terminal
-        st.caption("Details: Peaks je Terminal")
-        cp1, cp2, _, _, _ = st.columns(5)
-        cp1.metric("Max Queue T1", f"{mq_t1} Pax", delta=f"um {t_t1} ({s_t1})", delta_color="off")
-        cp2.metric("Max Queue T2", f"{mq_t2} Pax", delta=f"um {t_t2} ({s_t2})", delta_color="off")
+        # Details je Terminal
+        st.caption("Details: Aufkommen & Peaks je Terminal")
+        pax_t1 = len(df_res[df_res['terminal'] == 'T1'])
+        pax_t2 = len(df_res[df_res['terminal'] == 'T2'])
+        cp1, cp2, cp3, cp4 = st.columns(4)
+        cp1.metric("Passagiere T1", f"{pax_t1:,}".replace(",", "."))
+        cp2.metric("Max Queue T1", f"{mq_t1} Pax", delta=f"um {t_t1} ({s_t1})", delta_color="off")
+        cp3.metric("Passagiere T2", f"{pax_t2:,}".replace(",", "."))
+        cp4.metric("Max Queue T2", f"{mq_t2} Pax", delta=f"um {t_t2} ({s_t2})", delta_color="off")
         st.markdown("---")
 
-        # Optional: 4er-Gruppe (VH/VE × EES) sichtbar machen
+        # Bus Arrivals Plot
+        st.subheader("Bus-Ankünfte (Bulks)")
+        # Nur anzeigen, wenn es Bus-Passagiere gibt
+        if "Bus" in df_res["transport_mode"].unique():
+            df_bus = df_res[df_res["transport_mode"] == "Bus"].copy()
+            
+            # Gruppiere nach Ankunftszeit, um die Bulks zu identifizieren
+            bus_bulks = df_bus.groupby("arrival_min").agg(
+                pax_count=("pax_id", "count"),
+                fln=("fln", "first"),
+                ppos=("ppos", "first"),
+                terminal=("terminal", "first")
+            ).reset_index()
+
+            # Bus-Fahrzeit aus der Konfiguration holen
+            bus_travel_time = cfg_t1.bus_travel_time_min if cfg_t1 else st.session_state.get("bus_travel_time_min", 2.5)
+            bus_bulks["departure_min"] = bus_bulks["arrival_min"] - bus_travel_time
+
+            # Zeitstempel für die Anzeige berechnen
+            bus_bulks["arrival_time"] = t0 + pd.to_timedelta(bus_bulks["arrival_min"], unit="m")
+            bus_bulks["departure_time"] = t0 + pd.to_timedelta(bus_bulks["departure_min"], unit="m")
+
+            display_df = bus_bulks[[
+                "terminal", "fln", "ppos", "pax_count", "departure_time", "arrival_time"
+            ]].rename(columns={
+                "terminal": "Terminal",
+                "fln": "Flugnummer",
+                "ppos": "PPOS",
+                "pax_count": "Passagiere",
+                "departure_time": "Bus Abfahrt",
+                "arrival_time": "Bus Ankunft"
+            }).sort_values(["Terminal", "Bus Ankunft"])
+
+            st.dataframe(display_df.style.format({
+                "Bus Abfahrt": '{:%H:%M:%S}',
+                "Bus Ankunft": '{:%H:%M:%S}'
+            }), width='stretch')
+        else:
+            st.info("Keine Flüge mit Bustransfer in dieser Simulation.")
+
+        # Optional: 4er-Gruppe (V × EES) sichtbar machen
         if "ees_status" in df_res.columns:
             df_res["group_4"] = df_res["group"]
-            mask = df_res["group"].isin(["TCN_VH", "TCN_VE"])
+            mask = df_res["group"].isin(["TCN_V"])
             df_res.loc[mask, "group_4"] = (
                 df_res.loc[mask, "group"] + "_" + df_res.loc[mask, "ees_status"].fillna("NA")
             )
@@ -496,9 +548,9 @@ if "last_df_res_t1" in st.session_state and "last_df_res_t2" in st.session_state
             if not df_ts_t1.empty:
                 plot_wait_heatmap(df_res[df_res["terminal"]=="T1"], t0, show_sss=show_sss_t1)
                 plot_queue_over_time_rolling(df_ts_t1, t0, threshold=thresh_q_t1, window_min=15, step_min=1, show_sss=show_sss_t1, subset=["EU", "Easypass"])
-                plot_mean_wait_over_time_rolling(df_res[df_res["terminal"]=="T1"], t0, threshold=thresh_w_t1, window_min=15, step_min=1, show_sss=show_sss_t1, subset=["EU", "Easypass"])
+                plot_mean_wait_over_time_rolling(df_res[df_res["terminal"]=="T1"], df_ts_t1, cfg_t1, t0, threshold=thresh_w_t1, window_min=15, step_min=1, show_sss=show_sss_t1, subset=["EU", "Easypass"])
                 plot_queue_over_time_rolling(df_ts_t1, t0, threshold=thresh_q_t1, window_min=15, step_min=1, show_sss=show_sss_t1, subset=["TCN", "SSS (Kiosk)"])
-                plot_mean_wait_over_time_rolling(df_res[df_res["terminal"]=="T1"], t0, threshold=thresh_w_t1, window_min=15, step_min=1, show_sss=show_sss_t1, subset=["TCN", "SSS (Kiosk)"])
+                plot_mean_wait_over_time_rolling(df_res[df_res["terminal"]=="T1"], df_ts_t1, cfg_t1, t0, threshold=thresh_w_t1, window_min=15, step_min=1, show_sss=show_sss_t1, subset=["TCN", "SSS (Kiosk)"])
             else:
                 st.info("Keine Daten für Terminal 1.")
         
@@ -511,9 +563,9 @@ if "last_df_res_t1" in st.session_state and "last_df_res_t2" in st.session_state
             if not df_ts_t2.empty:
                 plot_wait_heatmap(df_res[df_res["terminal"]=="T2"], t0, show_sss=show_sss_t2)
                 plot_queue_over_time_rolling(df_ts_t2, t0, threshold=thresh_q_t2, window_min=15, step_min=1, show_sss=show_sss_t2, subset=["EU", "Easypass"])
-                plot_mean_wait_over_time_rolling(df_res[df_res["terminal"]=="T2"], t0, threshold=thresh_w_t2, window_min=15, step_min=1, show_sss=show_sss_t2, subset=["EU", "Easypass"])
+                plot_mean_wait_over_time_rolling(df_res[df_res["terminal"]=="T2"], df_ts_t2, cfg_t2, t0, threshold=thresh_w_t2, window_min=15, step_min=1, show_sss=show_sss_t2, subset=["EU", "Easypass"])
                 plot_queue_over_time_rolling(df_ts_t2, t0, threshold=thresh_q_t2, window_min=15, step_min=1, show_sss=show_sss_t2, subset=["TCN", "SSS (Kiosk)"])
-                plot_mean_wait_over_time_rolling(df_res[df_res["terminal"]=="T2"], t0, threshold=thresh_w_t2, window_min=15, step_min=1, show_sss=show_sss_t2, subset=["TCN", "SSS (Kiosk)"])
+                plot_mean_wait_over_time_rolling(df_res[df_res["terminal"]=="T2"], df_ts_t2, cfg_t2, t0, threshold=thresh_w_t2, window_min=15, step_min=1, show_sss=show_sss_t2, subset=["TCN", "SSS (Kiosk)"])
             else:
                 st.info("Keine Daten für Terminal 2.")
         

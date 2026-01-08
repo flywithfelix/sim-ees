@@ -1,6 +1,8 @@
 from __future__ import annotations
 from collections import Counter, defaultdict
+import math
 
+import pandas as pd
 import random
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional
@@ -8,19 +10,18 @@ from typing import Dict, Any, List, Optional
 import simpy
 
 from passenger_data import (
-    MEAN_SSS_VH_REG_S, SD_SSS_VH_REG_S, MEAN_SSS_VH_UNREG_S, SD_SSS_VH_UNREG_S,
-    MEAN_SSS_VE_REG_S, SD_SSS_VE_REG_S, MEAN_SSS_VE_UNREG_S, SD_SSS_VE_UNREG_S,
-    MEAN_TCN_VH_REG_S_SSS_ENABLED, SD_TCN_VH_REG_S_SSS_ENABLED, MEAN_TCN_VH_UNREG_S_SSS_ENABLED, SD_TCN_VH_UNREG_S_SSS_ENABLED,
-    MEAN_TCN_VH_REG_S_SSS_DISABLED, SD_TCN_VH_REG_S_SSS_DISABLED, MEAN_TCN_VH_UNREG_S_SSS_DISABLED, SD_TCN_VH_UNREG_S_SSS_DISABLED,
-    MEAN_TCN_VE_REG_S_SSS_ENABLED, SD_TCN_VE_REG_S_SSS_ENABLED, MEAN_TCN_VE_UNREG_S_SSS_ENABLED, SD_TCN_VE_UNREG_S_SSS_ENABLED,
-    MEAN_TCN_VE_REG_S_SSS_DISABLED, SD_TCN_VE_REG_S_SSS_DISABLED, MEAN_TCN_VE_UNREG_S_SSS_DISABLED, SD_TCN_VE_UNREG_S_SSS_DISABLED,
+    MEAN_SSS_S, SD_SSS_S,
+    MU_TCN_V_REG_S_SSS_ENABLED, SIGMA_TCN_V_REG_S_SSS_ENABLED, MU_TCN_V_UNREG_S_SSS_ENABLED, SIGMA_TCN_V_UNREG_S_SSS_ENABLED,
+    MU_TCN_V_REG_S_SSS_DISABLED, SIGMA_TCN_V_REG_S_SSS_DISABLED, MU_TCN_V_UNREG_S_SSS_DISABLED, SIGMA_TCN_V_UNREG_S_SSS_DISABLED,
+    MAX_TCN_V_S,
     MEAN_EASYPASS_S, SD_EASYPASS_S, MEAN_EU_S, SD_EU_S,
+    BUS_CAPACITY, BUS_FILL_TIME_MIN, BUS_TRAVEL_TIME_MIN,
 )
 from ppos_distances import PPOS_DISTANCE_M
 
 
 # Interne Gruppen
-GROUPS = ["EASYPASS", "EU_MANUAL", "TCN_AT", "TCN_VH", "TCN_VE"]
+GROUPS = ["EASYPASS", "EU_MANUAL", "TCN_AT", "TCN_V"]
 
 
 # =========================
@@ -28,38 +29,27 @@ GROUPS = ["EASYPASS", "EU_MANUAL", "TCN_AT", "TCN_VH", "TCN_VE"]
 # =========================
 @dataclass
 class SimConfig:
+    # Zeitabhängige TCN Kapazität
+    cap_tcn_schedule: dict[str, int]
+    mu_tcn_v_reg_s: float
+    sigma_tcn_v_reg_s: float
+    mu_tcn_v_unreg_s: float
+    sigma_tcn_v_unreg_s: float
+    max_tcn_v_s: float
+
     # Kapazitäten
     cap_sss: int = 6
     cap_easypass: int = 8
     cap_eu: int = 6
-    cap_tcn: int = 6
 
-    # EES-Verteilung (nur für TCN_VH / TCN_VE)
+    # EES-Verteilung (nur für TCN_V)
     ees_registered_share: float = 0.75
     # SSS aktiviert/deaktiviert
     sss_enabled: bool = True
 
-    # SSS Servicezeiten nach (VH/VE) x (reg/unreg) [Sekunden]
-    mean_sss_vh_reg_s: float = MEAN_SSS_VH_REG_S
-    sd_sss_vh_reg_s: float = SD_SSS_VH_REG_S
-    mean_sss_vh_unreg_s: float = MEAN_SSS_VH_UNREG_S
-    sd_sss_vh_unreg_s: float = SD_SSS_VH_UNREG_S
-
-    mean_sss_ve_reg_s: float = MEAN_SSS_VE_REG_S
-    sd_sss_ve_reg_s: float = SD_SSS_VE_REG_S
-    mean_sss_ve_unreg_s: float = MEAN_SSS_VE_UNREG_S
-    sd_sss_ve_unreg_s: float = SD_SSS_VE_UNREG_S
-
-    # TCN Servicezeiten nach (VH/VE) x (reg/unreg) x (SSS enabled/disabled) [Sekunden]
-    mean_tcn_vh_reg_s: float = MEAN_TCN_VH_REG_S_SSS_ENABLED
-    sd_tcn_vh_reg_s: float = SD_TCN_VH_REG_S_SSS_ENABLED
-    mean_tcn_vh_unreg_s: float = MEAN_TCN_VH_UNREG_S_SSS_ENABLED
-    sd_tcn_vh_unreg_s: float = SD_TCN_VH_UNREG_S_SSS_ENABLED
-
-    mean_tcn_ve_reg_s: float = MEAN_TCN_VE_REG_S_SSS_ENABLED
-    sd_tcn_ve_reg_s: float = SD_TCN_VE_REG_S_SSS_ENABLED
-    mean_tcn_ve_unreg_s: float = MEAN_TCN_VE_UNREG_S_SSS_ENABLED
-    sd_tcn_ve_unreg_s: float = SD_TCN_VE_UNREG_S_SSS_ENABLED
+    # SSS Servicezeiten [Sekunden]
+    mean_sss_s: float = MEAN_SSS_S
+    sd_sss_s: float = SD_SSS_S
 
     # EASYPASS / EU
     mean_easypass_s: float = MEAN_EASYPASS_S
@@ -71,21 +61,27 @@ class SimConfig:
     deboard_offset_min: float = 5.0
     deboard_window_min: float = 20.0
 
+    # Zeit für das Verlassen und Betreten des Schalters (in Sekunden)
+    changeover_s: float = 0.0
+
     # Gehgeschwindigkeit (m/s) – Variation pro Passagier
     walk_speed_mean_mps: float = 1.25   # ca. 4.5 km/h
     walk_speed_sd_mps: float = 0.25
     walk_speed_floor_mps: float = 0.5   # nie langsamer als das
 
+    # Bus-Transport
+    bus_capacity: int = BUS_CAPACITY
+    bus_fill_time_min: float = BUS_FILL_TIME_MIN
+    bus_travel_time_min: float = BUS_TRAVEL_TIME_MIN
+
     # Passagiermix (muss in Summe 1.0 ergeben!)
     share_easypass: float = 0.35
     share_eu_manual: float = 0.35
     share_tcn_at: float = 0.10
-    share_tcn_vh: float = 0.10
-    share_tcn_ve: float = 0.10
+    share_tcn_v: float = 0.20
 
     # Routing-Heuristik für TCN-AT
-    tcn_at_policy: str = "load"  # "load" oder "queue"
-
+    tcn_at_target: str = "EASYPASS"  # "EASYPASS", "EU", oder "TCN"
 
 # =========================
 # Ergebnisstruktur
@@ -94,8 +90,10 @@ class SimConfig:
 class PassengerResult:
     flight_key: str
     fln: str
+    ppos: str
     pax_id: int
     group: str
+    transport_mode: str
 
     arrival_min: float
     exit_min: float
@@ -124,6 +122,17 @@ def _pos_normal(rng: random.Random, mean: float, sd: float, floor: float = 0.05)
     return max(floor, rng.normalvariate(mean, sd))
 
 
+def _lognorm(rng: random.Random, mu: float, sigma: float, cap: float, floor: float = 0.05) -> float:
+    """Generiert eine lognormal-verteilte Zufallszahl mit einem Minimum (floor) und Maximum (cap)."""
+    if sigma <= 0:
+        # Wenn sigma 0 ist, ist die Verteilung eine einzelne Spitze bei exp(mu).
+        # Wir geben diesen Wert zurück, aber beachten floor und cap.
+        return min(cap, max(floor, math.exp(mu)))
+
+    val = rng.lognormvariate(mu, sigma)
+    return min(cap, max(floor, val))
+
+
 def _service_time_min(
     cfg: SimConfig,
     rng: random.Random,
@@ -133,20 +142,9 @@ def _service_time_min(
 ) -> float:
     """Servicezeit in Minuten (Input in Sekunden)."""
 
-    # ---- SSS: nur relevant für VH/VE ----
+    # ---- SSS ----
     if station == "SSS":
-        if group in ("TCN_VH", "TCN_VE") and ees_status in ("EES_registered", "EES_unregistered"):
-            if group == "TCN_VH" and ees_status == "EES_registered":
-                return _pos_normal(rng, cfg.mean_sss_vh_reg_s, cfg.sd_sss_vh_reg_s) / 60.0
-            if group == "TCN_VH" and ees_status == "EES_unregistered":
-                return _pos_normal(rng, cfg.mean_sss_vh_unreg_s, cfg.sd_sss_vh_unreg_s) / 60.0
-            if group == "TCN_VE" and ees_status == "EES_registered":
-                return _pos_normal(rng, cfg.mean_sss_ve_reg_s, cfg.sd_sss_ve_reg_s) / 60.0
-            if group == "TCN_VE" and ees_status == "EES_unregistered":
-                return _pos_normal(rng, cfg.mean_sss_ve_unreg_s, cfg.sd_sss_ve_unreg_s) / 60.0
-
-        # Fallback (sollte eigentlich nicht passieren)
-        #return _pos_normal(rng, cfg.mean_sss_s, cfg.sd_sss_s) / 60.0
+        return _pos_normal(rng, cfg.mean_sss_s, cfg.sd_sss_s) / 60.0
 
     # ---- Easypass / EU unverändert ----
     if station == "EASYPASS":
@@ -155,17 +153,13 @@ def _service_time_min(
     if station == "EU":
         return _pos_normal(rng, cfg.mean_eu_s, cfg.sd_eu_s) / 60.0
 
-    # ---- TCN: VH/VE x reg/unreg ----
+    # ---- TCN: V x reg/unreg ----
     if station == "TCN":
-        if group in ("TCN_VH", "TCN_VE") and ees_status in ("EES_registered", "EES_unregistered"):
-            if group == "TCN_VH" and ees_status == "EES_registered":
-                return _pos_normal(rng, cfg.mean_tcn_vh_reg_s, cfg.sd_tcn_vh_reg_s) / 60.0
-            if group == "TCN_VH" and ees_status == "EES_unregistered":
-                return _pos_normal(rng, cfg.mean_tcn_vh_unreg_s, cfg.sd_tcn_vh_unreg_s) / 60.0
-            if group == "TCN_VE" and ees_status == "EES_registered":
-                return _pos_normal(rng, cfg.mean_tcn_ve_reg_s, cfg.sd_tcn_ve_reg_s) / 60.0
-            if group == "TCN_VE" and ees_status == "EES_unregistered":
-                return _pos_normal(rng, cfg.mean_tcn_ve_unreg_s, cfg.sd_tcn_ve_unreg_s) / 60.0
+        if group in ("TCN_V", "TCN_AT") and ees_status in ("EES_registered", "EES_unregistered"):
+            if ees_status == "EES_registered":
+                return _lognorm(rng, cfg.mu_tcn_v_reg_s, cfg.sigma_tcn_v_reg_s, cfg.max_tcn_v_s) / 60.0
+            if ees_status == "EES_unregistered":
+                return _lognorm(rng, cfg.mu_tcn_v_unreg_s, cfg.sigma_tcn_v_unreg_s, cfg.max_tcn_v_s) / 60.0
 
         # Fallback
         #return _pos_normal(rng, cfg.mean_tcn_s, cfg.sd_tcn_s) / 60.0
@@ -212,10 +206,11 @@ class _DisabledResource:
         return _DisabledResource._ReqCtx(self._env)
 
 class BorderControlModel:
-    def __init__(self, env: simpy.Environment, cfg: SimConfig, rng: random.Random):
+    def __init__(self, env: simpy.Environment, cfg: SimConfig, rng: random.Random, t0: pd.Timestamp):
         self.env = env
         self.cfg = cfg
         self.rng = rng
+        self.t0 = t0
 
         # Create real simpy resources only when enabled and capacity > 0.
         if getattr(cfg, "sss_enabled", True) and cfg.cap_sss and cfg.cap_sss > 0:
@@ -224,7 +219,12 @@ class BorderControlModel:
             self.sss = _DisabledResource(env)
         self.easypass = simpy.Resource(env, capacity=cfg.cap_easypass)
         self.eu = simpy.PriorityResource(env, capacity=cfg.cap_eu)
-        self.tcn = simpy.Resource(env, capacity=cfg.cap_tcn)
+        
+        # TCN wird als Store mit zeitlich variabler Kapazität modelliert
+        self.tcn = simpy.Store(env)
+        self.tcn_in_use = 0
+        self.current_tcn_capacity = 0
+        self.env.process(self.tcn_capacity_manager())
 
         self.results: List[PassengerResult] = []
         self.queue_ts: List[Dict[str, Any]] = []
@@ -235,23 +235,16 @@ class BorderControlModel:
             "q_sss": len(self.sss.queue), "in_sss": self.sss.count,
             "q_easypass": len(self.easypass.queue), "in_easypass": self.easypass.count,
             "q_eu": len(self.eu.queue), "in_eu": self.eu.count,
-            "q_tcn": len(self.tcn.queue), "in_tcn": self.tcn.count,
+            "q_tcn": len(self.tcn.get_queue), "in_tcn": self.tcn_in_use,
         })
 
     def eu_manual_waiting(self) -> bool:
         return any(getattr(req, "priority", 99) == 0 for req in self.eu.queue)
 
-    def _load(self, res: simpy.Resource) -> float:
-        return (len(res.queue) + res.count) / max(1, res.capacity)
-
-    def choose_for_tcn_at(self) -> str:
-        if self.cfg.tcn_at_policy == "queue":
-            return "EASYPASS" if len(self.easypass.queue) <= len(self.eu.queue) else "EU"
-        return "EASYPASS" if self._load(self.easypass) <= self._load(self.eu) else "EU"
-
     def do_station(self, station: str, pr: PassengerResult, eu_priority: int = 0):
         self.snapshot()
         t_arr = float(self.env.now)
+        changeover_min = self.cfg.changeover_s / 60.0
 
         if station == "SSS":
             with self.sss.request() as req:
@@ -259,6 +252,8 @@ class BorderControlModel:
                 t_start = float(self.env.now)
                 serv = _service_time_min(self.cfg, self.rng, "SSS", pr.group, pr.ees_status)
                 yield self.env.timeout(serv)
+                if changeover_min > 0:
+                    yield self.env.timeout(changeover_min)
             pr.used_sss = True
             pr.wait_sss += t_start - t_arr
             pr.serv_sss += serv
@@ -269,6 +264,8 @@ class BorderControlModel:
                 t_start = float(self.env.now)
                 serv = _service_time_min(self.cfg, self.rng, "EASYPASS")
                 yield self.env.timeout(serv)
+                if changeover_min > 0:
+                    yield self.env.timeout(changeover_min)
             pr.used_easypass = True
             pr.wait_easypass += t_start - t_arr
             pr.serv_easypass += serv
@@ -279,29 +276,90 @@ class BorderControlModel:
                 t_start = float(self.env.now)
                 serv = _service_time_min(self.cfg, self.rng, "EU")
                 yield self.env.timeout(serv)
+                if changeover_min > 0:
+                    yield self.env.timeout(changeover_min)
             pr.used_eu = True
             pr.wait_eu += t_start - t_arr
             pr.serv_eu += serv
 
         elif station == "TCN":
-            with self.tcn.request() as req:
-                yield req
-                t_start = float(self.env.now)
-                serv = _service_time_min(self.cfg, self.rng, "TCN", pr.group, pr.ees_status)
-                yield self.env.timeout(serv)
+            server = yield self.tcn.get()
+            self.tcn_in_use += 1
+            self.snapshot() # Snapshot after getting server to correctly show queue and usage
+            
+            t_start = float(self.env.now)
+            serv = _service_time_min(self.cfg, self.rng, "TCN", pr.group, pr.ees_status)
+            yield self.env.timeout(serv)
+            if changeover_min > 0:
+                yield self.env.timeout(changeover_min)
+            
+            yield self.tcn.put(server)
+            self.tcn_in_use -= 1
             pr.used_tcn = True
             pr.wait_tcn += t_start - t_arr
             pr.serv_tcn += serv
 
         self.snapshot()
 
-    def passenger_process(self, flight_key: str, fln: str, pax_id: int, group: str, ees_status: str | None = None):
+    def tcn_capacity_manager(self):
+        """Ein Prozess, der die Kapazität der TCN-Station über die Zeit anpasst."""
+        
+        # 1. Parse schedule from config
+        schedule_parsed = []
+        for key, cap in self.cfg.cap_tcn_schedule.items():
+            start_h_str, end_h_str = key.split('-')
+            start_h = int(start_h_str)
+            start_min_of_day = start_h * 60
+            schedule_parsed.append((start_min_of_day, cap))
+        schedule_parsed.sort()
+
+        # 2. Determine initial capacity at simulation start (t=0)
+        sim_start_time_of_day_min = self.t0.hour * 60 + self.t0.minute
+        initial_cap = schedule_parsed[-1][1] # Default to last entry if before first
+        for start_min, cap in schedule_parsed:
+            if sim_start_time_of_day_min >= start_min:
+                initial_cap = cap
+        
+        self.current_tcn_capacity = initial_cap
+        for i in range(initial_cap):
+            yield self.tcn.put(f"TCN-Server-{i}")
+
+        # 3. Eine Liste aller zukünftigen Kapazitätsänderungen erstellen
+        events = []
+        for change_time_min, new_cap in schedule_parsed:
+            # Event für den aktuellen Tag
+            events.append((self.t0.normalize() + pd.Timedelta(minutes=change_time_min), new_cap))
+            # Event für den nächsten Tag (falls die Simulation über Mitternacht läuft)
+            events.append((self.t0.normalize() + pd.Timedelta(days=1, minutes=change_time_min), new_cap))
+        
+        # Events sortieren und nur die behalten, die nach dem Simulationsstart liegen
+        future_events = sorted([e for e in events if e[0] > self.t0])
+
+        # 4. Zukünftige Events sequenziell abarbeiten
+        for change_datetime, new_cap in future_events:
+            sim_time_for_change = (change_datetime - self.t0).total_seconds() / 60.0
+            delay = sim_time_for_change - self.env.now
+            if delay > 0:
+                yield self.env.timeout(delay)
+
+            diff = new_cap - self.current_tcn_capacity
+            if diff > 0:
+                for i in range(diff):
+                    yield self.tcn.put(f"TCN-Server-Dynamic-{self.env.now}-{i}")
+            elif diff < 0:
+                for _ in range(abs(diff)):
+                    yield self.tcn.get()
+            self.current_tcn_capacity = new_cap
+
+    def passenger_process(self, flight_key: str, fln: str, ppos: str, pax_id: int, group: str, ees_status: str | None = None, transport_mode: str = "Walk"):
         arrival = float(self.env.now)
         pr = PassengerResult(
             flight_key=flight_key,
             fln=fln,
+            ppos=ppos,
             pax_id=pax_id,
             group=group,
+            transport_mode=transport_mode,
             ees_status=ees_status,
             arrival_min=arrival,
             exit_min=arrival,
@@ -315,10 +373,15 @@ class BorderControlModel:
             yield from self.do_station("EU", pr, eu_priority=0)
 
         elif group == "TCN_AT":
-            station = self.choose_for_tcn_at()
-            yield from self.do_station(station, pr, eu_priority=0 if station == "EU" else 0)
+            station = self.cfg.tcn_at_target
+            if station == "EASYPASS":
+                yield from self.do_station("EASYPASS", pr)
+            elif station == "EU":
+                yield from self.do_station("EU", pr, eu_priority=0)
+            elif station == "TCN":
+                yield from self.do_station("TCN", pr)
 
-        elif group in ("TCN_VH", "TCN_VE"):
+        elif group == "TCN_V":
             # SSS nur wenn enabled
             if self.cfg.sss_enabled:
                 yield from self.do_station("SSS", pr)
@@ -335,7 +398,7 @@ class BorderControlModel:
         """
         Kontrollwerte am Ende der Simulation:
         - Anzahl & Anteil je Gruppe
-        - optional: Aufsplittung für TCN_VH/TCN_VE nach EES_registered/unregistered
+        - optional: Aufsplittung für TCN_V nach EES_registered/unregistered
         - optional: Anzahl je Flug (flight_key)
         """
         total = len(self.results)
@@ -343,11 +406,11 @@ class BorderControlModel:
         # 1) counts je Gruppe
         c_group = Counter(r.group for r in self.results)
 
-        # 2) counts je (Gruppe, EES-Status) für VH/VE
+        # 2) counts je (Gruppe, EES-Status) für V
         c_group_ees = Counter(
             (r.group, r.ees_status)
             for r in self.results
-            if r.group in ("TCN_VH", "TCN_VE")
+            if r.group == "TCN_V"
         )
 
         # 3) counts je Flug
@@ -365,7 +428,7 @@ class BorderControlModel:
                 "share_pct": round(pct(n), 1),
             })
 
-        # EES-Split (nur VH/VE)
+        # EES-Split (nur V)
         table_by_group_ees = []
         for (g, ees), n in sorted(c_group_ees.items(), key=lambda x: (-x[1], x[0][0], str(x[0][1]))):
             table_by_group_ees.append({
@@ -380,11 +443,10 @@ class BorderControlModel:
             "EASYPASS": self.cfg.share_easypass,
             "EU_MANUAL": self.cfg.share_eu_manual,
             "TCN_AT": self.cfg.share_tcn_at,
-            "TCN_VH": self.cfg.share_tcn_vh,
-            "TCN_VE": self.cfg.share_tcn_ve,
+            "TCN_V": self.cfg.share_tcn_v,
         }
         table_mix_check = []
-        for g in ["EASYPASS", "EU_MANUAL", "TCN_AT", "TCN_VH", "TCN_VE"]:
+        for g in ["EASYPASS", "EU_MANUAL", "TCN_AT", "TCN_V"]:
             n = c_group.get(g, 0)
             ist = (n / total) if total else 0.0
             soll = target.get(g, 0.0)
@@ -414,8 +476,7 @@ def assign_groups(cfg: SimConfig, rng: random.Random, n: int) -> List[str]:
         cfg.share_easypass,
         cfg.share_eu_manual,
         cfg.share_tcn_at,
-        cfg.share_tcn_vh,
-        cfg.share_tcn_ve,
+        cfg.share_tcn_v,
     ]
     return rng.choices(GROUPS, weights=weights, k=n)
 
@@ -430,31 +491,50 @@ def schedule_flights(env: simpy.Environment, model: BorderControlModel, flights:
 
         # Distanz einmal pro Flug bestimmen (PPOS -> Border)
         distance_m = float(PPOS_DISTANCE_M.get(str(f["ppos"]), 0.0))
+        ppos = str(f["ppos"])
 
-        for i, g in enumerate(groups, start=1):
-            # 5 Min Türen öffnen (= deboard_offset_min) + Deboarding-Verteilung im Fenster
-            deboard_delay = (
-                model.cfg.deboard_offset_min
-                + model.rng.random() * model.cfg.deboard_window_min
-            )
+        if distance_m > 0:
+            # Passagiere gehen zu Fuß
+            transport_mode = "Walk"
+            for i, g in enumerate(groups, start=1):
+                # 5 Min Türen öffnen (= deboard_offset_min) + Deboarding-Verteilung im Fenster
+                deboard_delay = (
+                    model.cfg.deboard_offset_min
+                    + model.rng.random() * model.cfg.deboard_window_min
+                )
+                # Fußweg zur Grenzkontrolle (abhängig von PPOS und individueller Gehgeschwindigkeit)
+                walk_delay = _walk_time_min(model.cfg, model.rng, distance_m)
+                # EES-Status für TCN-Gruppen
+                ees_status = None
+                if g in ("TCN_V", "TCN_AT"):
+                    if model.rng.random() < model.cfg.ees_registered_share:
+                        ees_status = "EES_registered"
+                    else:
+                        ees_status = "EES_unregistered"
+                total_delay = deboard_delay + walk_delay
+                env.process(spawn_after(total_delay, f["flight_key"], f["fln"], ppos, i, g, ees_status, transport_mode))
+        else:
+            # Passagiere werden mit dem Bus gefahren
+            transport_mode = "Bus"
+            bus_capacity = model.cfg.bus_capacity
+            bus_fill_time = model.cfg.bus_fill_time_min
+            bus_travel_time = model.cfg.bus_travel_time_min
+            
+            for i, g in enumerate(groups, start=1):
+                bus_index = (i - 1) // bus_capacity  # 0-indizierter Bus
+                bus_arrival_delay = (
+                    model.cfg.deboard_offset_min
+                    + (bus_index + 1) * bus_fill_time
+                    + bus_travel_time
+                )
+                ees_status = None
+                if g in ("TCN_V", "TCN_AT"):
+                    ees_status = "EES_registered" if model.rng.random() < model.cfg.ees_registered_share else "EES_unregistered"
+                env.process(spawn_after(bus_arrival_delay, f["flight_key"], f["fln"], ppos, i, g, ees_status, transport_mode))
 
-            # Fußweg zur Grenzkontrolle (abhängig von PPOS und individueller Gehgeschwindigkeit)
-            walk_delay = _walk_time_min(model.cfg, model.rng, distance_m)
-
-            # EES-Status nur für TCN_VH / TCN_VE
-            ees_status = None
-            if g in ("TCN_VH", "TCN_VE"):
-                if model.rng.random() < model.cfg.ees_registered_share:
-                    ees_status = "EES_registered"
-                else:
-                    ees_status = "EES_unregistered"
-
-            total_delay = deboard_delay + walk_delay
-            env.process(spawn_after(total_delay, f["flight_key"], f["fln"], i, g, ees_status))
-
-    def spawn_after(delay: float, flight_key: str, fln: str, pax_id: int, group: str, ees_status: str | None):
+    def spawn_after(delay: float, flight_key: str, fln: str, ppos: str, pax_id: int, group: str, ees_status: str | None, transport_mode: str):
         yield env.timeout(delay)
-        env.process(model.passenger_process(flight_key, fln, pax_id, group, ees_status))
+        env.process(model.passenger_process(flight_key, fln, ppos, pax_id, group, ees_status, transport_mode))
 
     for f in flights:
         env.process(flight_proc(f))
@@ -468,12 +548,13 @@ def schedule_flights(env: simpy.Environment, model: BorderControlModel, flights:
 def run_simulation(
     flights: List[Dict[str, Any]],
     cfg: SimConfig,
+    t0: pd.Timestamp,
     seed: int = 42,
     until_min: Optional[float] = None,
 ) -> BorderControlModel:
     rng = random.Random(seed)
     env = simpy.Environment()
-    model = BorderControlModel(env, cfg, rng)
+    model = BorderControlModel(env, cfg, rng, t0)
     schedule_flights(env, model, flights)
 
     if until_min is None:

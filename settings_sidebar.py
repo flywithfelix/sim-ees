@@ -2,13 +2,12 @@ from __future__ import annotations
 import streamlit as st
 from passenger_data import DEFAULT_MIX, MEAN_EASYPASS_S, SD_EASYPASS_S, MEAN_EU_S, SD_EU_S
 from passenger_data import (
-    MEAN_SSS_VH_REG_S, SD_SSS_VH_REG_S, MEAN_SSS_VH_UNREG_S, SD_SSS_VH_UNREG_S,
-    MEAN_SSS_VE_REG_S, SD_SSS_VE_REG_S, MEAN_SSS_VE_UNREG_S, SD_SSS_VE_UNREG_S,
-    MEAN_TCN_VH_REG_S_SSS_ENABLED, SD_TCN_VH_REG_S_SSS_ENABLED, MEAN_TCN_VH_UNREG_S_SSS_ENABLED, SD_TCN_VH_UNREG_S_SSS_ENABLED,
-    MEAN_TCN_VH_REG_S_SSS_DISABLED, SD_TCN_VH_REG_S_SSS_DISABLED, MEAN_TCN_VH_UNREG_S_SSS_DISABLED, SD_TCN_VH_UNREG_S_SSS_DISABLED,
-    MEAN_TCN_VE_REG_S_SSS_ENABLED, SD_TCN_VE_REG_S_SSS_ENABLED, MEAN_TCN_VE_UNREG_S_SSS_ENABLED, SD_TCN_VE_UNREG_S_SSS_ENABLED,
-    MEAN_TCN_VE_REG_S_SSS_DISABLED, SD_TCN_VE_REG_S_SSS_DISABLED, MEAN_TCN_VE_UNREG_S_SSS_DISABLED, SD_TCN_VE_UNREG_S_SSS_DISABLED,
+    MEAN_SSS_S, SD_SSS_S,
+    MU_TCN_V_REG_S_SSS_ENABLED, SIGMA_TCN_V_REG_S_SSS_ENABLED, MU_TCN_V_UNREG_S_SSS_ENABLED, SIGMA_TCN_V_UNREG_S_SSS_ENABLED,
+    MU_TCN_V_REG_S_SSS_DISABLED, SIGMA_TCN_V_REG_S_SSS_DISABLED, MU_TCN_V_UNREG_S_SSS_DISABLED, SIGMA_TCN_V_UNREG_S_SSS_DISABLED,
+    MAX_TCN_V_S,
 )
+from passenger_data import BUS_CAPACITY, BUS_FILL_TIME_MIN, BUS_TRAVEL_TIME_MIN
 from session_state_init import init_session_state, save_session_settings, load_session_settings
 
 
@@ -30,25 +29,30 @@ def _reset_all_settings():
         "walk_speed_mean_mps": 1.25, "walk_speed_sd_mps": 0.25, "walk_speed_floor_mps": 0.5,
         "sss_enabled_t1": True,
         "sss_enabled_t2": True,
+        "bus_capacity": BUS_CAPACITY,
+        "bus_fill_time_min": BUS_FILL_TIME_MIN,
+        "bus_travel_time_min": BUS_TRAVEL_TIME_MIN,
         "cap_sss": 6, "cap_easypass": 6, "cap_eu": 2, "cap_tcn": 2,
-        "cap_sss_t1": 4, "cap_easypass_t1": 6, "cap_eu_t1": 2, "cap_tcn_t1": 2,
+        "cap_sss_t1": 4, "cap_easypass_t1": 4, "cap_eu_t1": 2,
         "mean_easypass_s": MEAN_EASYPASS_S, "sd_easypass_s": SD_EASYPASS_S,
         "mean_eu_s": MEAN_EU_S, "sd_eu_s": SD_EU_S,
         "process_time_scale_pct": 100,
-        "tcn_at_policy": "load",
+        "tcn_at_target": "EASYPASS",
+        "changeover_s": 0.0,
         "seed": 42,
-        "sim_runs": 5,
         "threshold_pax_length_t1": 50, "threshold_pax_length_t2": 50,
         "threshold_wait_s_t1": 60, "threshold_wait_s_t2": 60,
-        "mean_sss_vh_reg_s": MEAN_SSS_VH_REG_S, "sd_sss_vh_reg_s": SD_SSS_VH_REG_S,
-        "mean_sss_vh_unreg_s": MEAN_SSS_VH_UNREG_S, "sd_sss_vh_unreg_s": SD_SSS_VH_UNREG_S,
-        "mean_sss_ve_reg_s": MEAN_SSS_VE_REG_S, "sd_sss_ve_reg_s": SD_SSS_VE_REG_S,
-        "mean_sss_ve_unreg_s": MEAN_SSS_VE_UNREG_S, "sd_sss_ve_unreg_s": SD_SSS_VE_UNREG_S,
-        "mean_tcn_vh_reg_s": MEAN_TCN_VH_REG_S_SSS_ENABLED, "sd_tcn_vh_reg_s": SD_TCN_VH_REG_S_SSS_ENABLED,
-        "mean_tcn_vh_unreg_s": MEAN_TCN_VH_UNREG_S_SSS_ENABLED, "sd_tcn_vh_unreg_s": SD_TCN_VH_UNREG_S_SSS_ENABLED,
-        "mean_tcn_ve_reg_s": MEAN_TCN_VE_REG_S_SSS_ENABLED, "sd_tcn_ve_reg_s": SD_TCN_VE_REG_S_SSS_ENABLED,
-        "mean_tcn_ve_unreg_s": MEAN_TCN_VE_UNREG_S_SSS_ENABLED, "sd_tcn_ve_unreg_s": SD_TCN_VE_UNREG_S_SSS_ENABLED,
+        "mean_sss_s": MEAN_SSS_S,
+        "sd_sss_s": SD_SSS_S,
+        "mu_tcn_v_reg_s": MU_TCN_V_REG_S_SSS_ENABLED, "sigma_tcn_v_reg_s": SIGMA_TCN_V_REG_S_SSS_ENABLED,
+        "mu_tcn_v_unreg_s": MU_TCN_V_UNREG_S_SSS_ENABLED, "sigma_tcn_v_unreg_s": SIGMA_TCN_V_UNREG_S_SSS_ENABLED,
+        "max_tcn_v_s": MAX_TCN_V_S,
     }
+    intervals = ["06-09", "09-12", "12-15", "15-18", "18-21", "21-00"]
+    for interval in intervals:
+        defaults[f"cap_tcn_t1_{interval}"] = 2
+    for interval in intervals:
+        defaults[f"cap_tcn_t2_{interval}"] = 2
     for k, v in defaults.items():
         st.session_state[k] = v
     st.toast("Alle Einstellungen wurden auf Standardwerte zurückgesetzt.", icon="✅")
@@ -56,27 +60,19 @@ def _reset_all_settings():
 
 def _load_tcn_defaults_sss_active():
     """Load TCN times for SSS enabled."""
-    st.session_state.mean_tcn_vh_reg_s = MEAN_TCN_VH_REG_S_SSS_ENABLED
-    st.session_state.sd_tcn_vh_reg_s = SD_TCN_VH_REG_S_SSS_ENABLED
-    st.session_state.mean_tcn_vh_unreg_s = MEAN_TCN_VH_UNREG_S_SSS_ENABLED
-    st.session_state.sd_tcn_vh_unreg_s = SD_TCN_VH_UNREG_S_SSS_ENABLED
-    st.session_state.mean_tcn_ve_reg_s = MEAN_TCN_VE_REG_S_SSS_ENABLED
-    st.session_state.sd_tcn_ve_reg_s = SD_TCN_VE_REG_S_SSS_ENABLED
-    st.session_state.mean_tcn_ve_unreg_s = MEAN_TCN_VE_UNREG_S_SSS_ENABLED
-    st.session_state.sd_tcn_ve_unreg_s = SD_TCN_VE_UNREG_S_SSS_ENABLED
+    st.session_state.mu_tcn_v_reg_s = MU_TCN_V_REG_S_SSS_ENABLED
+    st.session_state.sigma_tcn_v_reg_s = SIGMA_TCN_V_REG_S_SSS_ENABLED
+    st.session_state.mu_tcn_v_unreg_s = MU_TCN_V_UNREG_S_SSS_ENABLED
+    st.session_state.sigma_tcn_v_unreg_s = SIGMA_TCN_V_UNREG_S_SSS_ENABLED
     st.toast("TCN-Zeiten für SSS=aktiv geladen.", icon="⚡")
 
 
 def _load_tcn_defaults_sss_inactive():
     """Load TCN times for SSS disabled."""
-    st.session_state.mean_tcn_vh_reg_s = MEAN_TCN_VH_REG_S_SSS_DISABLED
-    st.session_state.sd_tcn_vh_reg_s = SD_TCN_VH_REG_S_SSS_DISABLED
-    st.session_state.mean_tcn_vh_unreg_s = MEAN_TCN_VH_UNREG_S_SSS_DISABLED
-    st.session_state.sd_tcn_vh_unreg_s = SD_TCN_VH_UNREG_S_SSS_DISABLED
-    st.session_state.mean_tcn_ve_reg_s = MEAN_TCN_VE_REG_S_SSS_DISABLED
-    st.session_state.sd_tcn_ve_reg_s = SD_TCN_VE_REG_S_SSS_DISABLED
-    st.session_state.mean_tcn_ve_unreg_s = MEAN_TCN_VE_UNREG_S_SSS_DISABLED
-    st.session_state.sd_tcn_ve_unreg_s = SD_TCN_VE_UNREG_S_SSS_DISABLED
+    st.session_state.mu_tcn_v_reg_s = MU_TCN_V_REG_S_SSS_DISABLED
+    st.session_state.sigma_tcn_v_reg_s = SIGMA_TCN_V_REG_S_SSS_DISABLED
+    st.session_state.mu_tcn_v_unreg_s = MU_TCN_V_UNREG_S_SSS_DISABLED
+    st.session_state.sigma_tcn_v_unreg_s = SIGMA_TCN_V_UNREG_S_SSS_DISABLED
     st.toast("TCN-Zeiten für SSS=inaktiv geladen.", icon="🐢")
 
 
@@ -99,8 +95,7 @@ def render_settings_sidebar(show_sim_button: bool = False):
             st.session_state["mix_easypass"] +
             st.session_state["mix_eu_manual"] +
             st.session_state["mix_tcn_at"] +
-            st.session_state["mix_tcn_vh"] +
-            st.session_state["mix_tcn_ve"]
+            st.session_state["mix_tcn_v"]
         )
         sim_button_disabled = mix_sum != 100
         if st.sidebar.button(
@@ -121,8 +116,7 @@ def render_settings_sidebar(show_sim_button: bool = False):
         st.slider("Easypass [%]", 0, 100, key="mix_easypass")
         st.slider("EU-manual [%]", 0, 100, key="mix_eu_manual")
         st.slider("TCN-AT [%]", 0, 100, key="mix_tcn_at")
-        st.slider("TCN-VH [%]", 0, 100, key="mix_tcn_vh")
-        st.slider("TCN-VE [%]", 0, 100, key="mix_tcn_ve")
+        st.slider("TCN-V [%]", 0, 100, key="mix_tcn_v")
 
         st.button("Reset Mix", on_click=_reset_passenger_mix)
 
@@ -130,8 +124,7 @@ def render_settings_sidebar(show_sim_button: bool = False):
             st.session_state["mix_easypass"] +
             st.session_state["mix_eu_manual"] +
             st.session_state["mix_tcn_at"] +
-            st.session_state["mix_tcn_vh"] +
-            st.session_state["mix_tcn_ve"]
+            st.session_state["mix_tcn_v"]
         )
         if mix_sum == 100:
             st.success(f"Summe: {mix_sum}% ✅")
@@ -155,6 +148,12 @@ def render_settings_sidebar(show_sim_button: bool = False):
         st.number_input("Stdabw. Gehgeschwindigkeit [m/s]", min_value=0.0, step=0.05, key="walk_speed_sd_mps")
         st.number_input("Min. Gehgeschwindigkeit [m/s]", min_value=0.1, step=0.05, key="walk_speed_floor_mps")
 
+    # Bus transport for unknown PPOS
+    with st.sidebar.expander("Bus-Transport (unbek. PPOS)"):
+        st.number_input("Bus Kapazität [Pax]", min_value=1, step=1, key="bus_capacity")
+        st.number_input("Bus Füllzeit [min]", min_value=0.0, step=0.5, key="bus_fill_time_min")
+        st.number_input("Bus Fahrzeit [min]", min_value=0.0, step=0.5, key="bus_travel_time_min")
+
     # SSS and Capacities
     with st.sidebar.expander("SSS (Kiosk)"):
         st.checkbox("SSS (Kiosk) T1 aktiv", key="sss_enabled_t1")
@@ -168,16 +167,27 @@ def render_settings_sidebar(show_sim_button: bool = False):
     with st.sidebar.expander("Kapazitäten"):
         st.markdown("**Terminal 1**")
         st.slider("SSS T1", min_value=1, max_value=4, key="cap_sss_t1")
-        st.slider("Easypass T1", min_value=1, max_value=6, key="cap_easypass_t1")
+        st.slider("Easypass T1", min_value=1, max_value=4, key="cap_easypass_t1")
         st.slider("EU T1", min_value=1, max_value=4, key="cap_eu_t1")
-        st.slider("TCN T1", min_value=1, max_value=6, key="cap_tcn_t1")
 
         st.markdown("**Terminal 2**")
         st.slider("SSS T2", min_value=1, max_value=6, key="cap_sss")
         st.slider("Easypass T2", min_value=1, max_value=6, key="cap_easypass")
         st.slider("EU T2", min_value=1, max_value=2, key="cap_eu")
-        st.slider("TCN T2", min_value=1, max_value=6, key="cap_tcn")
 
+        st.markdown("---")
+        st.markdown("**TCN Kapazität (zeitabhängig)**")
+        intervals = ["06-09", "09-12", "12-15", "15-18", "18-21", "21-00"]
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Terminal 1**")
+            for interval in intervals:
+                st.number_input(f"T1 {interval}h", min_value=0, max_value=6, key=f"cap_tcn_t1_{interval}")
+        with col2:
+            st.markdown("**Terminal 2**")
+            for interval in intervals:
+                st.number_input(f"T2 {interval}h", min_value=0, max_value=6, key=f"cap_tcn_t2_{interval}")
     # Process times (grouped in expanders)
     with st.sidebar.expander("Prozesszeiten (Easypass / EU)"):
         st.number_input("Easypass Ø", min_value=1.0, step=1.0, key="mean_easypass_s")
@@ -186,35 +196,23 @@ def render_settings_sidebar(show_sim_button: bool = False):
         st.number_input("EU Stdabw.", min_value=0.0, step=1.0, key="sd_eu_s")
 
     with st.sidebar.expander("Prozesszeiten (SSS)"):
-        st.markdown("**TCN-VH**")
-        st.number_input("SSS VH reg Ø", min_value=1.0, step=1.0, key="mean_sss_vh_reg_s")
-        st.number_input("SSS VH reg Stdabw.", min_value=0.0, step=1.0, key="sd_sss_vh_reg_s")
-        st.number_input("SSS VH unreg Ø", min_value=1.0, step=1.0, key="mean_sss_vh_unreg_s")
-        st.number_input("SSS VH unreg Stdabw.", min_value=0.0, step=1.0, key="sd_sss_vh_unreg_s")
-        st.markdown("**TCN-VE**")
-        st.number_input("SSS VE reg Ø", min_value=1.0, step=1.0, key="mean_sss_ve_reg_s")
-        st.number_input("SSS VE reg Stdabw.", min_value=0.0, step=1.0, key="sd_sss_ve_reg_s")
-        st.number_input("SSS VE unreg Ø", min_value=1.0, step=1.0, key="mean_sss_ve_unreg_s")
-        st.number_input("SSS VE unreg Stdabw.", min_value=0.0, step=1.0, key="sd_sss_ve_unreg_s")
+        st.number_input("SSS Ø", min_value=1.0, step=1.0, key="mean_sss_s")
+        st.number_input("SSS Stdabw.", min_value=0.0, step=1.0, key="sd_sss_s")
 
     with st.sidebar.expander("Prozesszeiten (TCN)"):
-        st.markdown("**TCN-VH**")
-        st.number_input("TCN VH reg Ø", min_value=1.0, step=1.0, key="mean_tcn_vh_reg_s")
-        st.number_input("TCN VH reg Stdabw.", min_value=0.0, step=1.0, key="sd_tcn_vh_reg_s")
-        st.number_input("TCN VH unreg Ø", min_value=1.0, step=1.0, key="mean_tcn_vh_unreg_s")
-        st.number_input("TCN VH unreg Stdabw.", min_value=0.0, step=1.0, key="sd_tcn_vh_unreg_s")
-        st.markdown("**TCN-VE**")
-        st.number_input("TCN VE reg Ø", min_value=1.0, step=1.0, key="mean_tcn_ve_reg_s")
-        st.number_input("TCN VE reg Stdabw.", min_value=0.0, step=1.0, key="sd_tcn_ve_reg_s")
-        st.number_input("TCN VE unreg Ø", min_value=1.0, step=1.0, key="mean_tcn_ve_unreg_s")
-        st.number_input("TCN VE unreg Stdabw.", min_value=0.0, step=1.0, key="sd_tcn_ve_unreg_s")
+        st.markdown("**TCN-V**")
+        st.number_input("TCN V reg (Lognormal μ)", min_value=0.0, step=0.01, format="%.2f", key="mu_tcn_v_reg_s")
+        st.number_input("TCN V reg (Lognormal σ)", min_value=0.0, step=0.01, format="%.2f", key="sigma_tcn_v_reg_s")
+        st.number_input("TCN V unreg (Lognormal μ)", min_value=0.0, step=0.01, format="%.2f", key="mu_tcn_v_unreg_s")
+        st.number_input("TCN V unreg (Lognormal σ)", min_value=0.0, step=0.01, format="%.2f", key="sigma_tcn_v_unreg_s")
+        st.number_input("TCN V Max-Wert [s]", min_value=1.0, step=1.0, key="max_tcn_v_s", help="Verhindert extreme Ausreißer der Lognormalverteilung.")
 
     # Scaling and misc
     with st.sidebar.expander("Skalierung & Sonstiges"):
         st.slider("Prozesszeit-Skalierung [%]", 100, 200, key="process_time_scale_pct", help="Multipliziert alle Prozesszeiten.")
-        st.selectbox("TCN-AT Routing", ["load", "queue"], key="tcn_at_policy")
+        st.selectbox("TCN-AT Ziel", ["EASYPASS", "EU", "TCN"], key="tcn_at_target", help="Leitet TCN-AT Passagiere fest an eine Prozessstelle.")
+        st.number_input("Schalter-Wechselzeit [s]", min_value=0.0, step=0.5, key="changeover_s", help="Zeitlücke zwischen Passagieren an einem Schalter.")
         st.number_input("Random Seed", min_value=0, step=1, key="seed")
-        st.slider("Anzahl Simulationsläufe (Monte-Carlo)", min_value=1, max_value=50, key="sim_runs", help="Mehrere Durchläufe erhöhen die statistische Genauigkeit.")
 
     with st.sidebar.expander("Referenzlinien (für Plots)"):
         st.markdown("**Terminal 1**")
@@ -234,22 +232,23 @@ def render_settings_sidebar(show_sim_button: bool = False):
             keys_to_save = list(DEFAULT_MIX.keys()) + [
                 "ees_choice", "deboard_offset_min", "deboard_window_min",
                 "walk_speed_mean_mps", "walk_speed_sd_mps", "walk_speed_floor_mps",
+                "bus_capacity", "bus_fill_time_min", "bus_travel_time_min",
                 "sss_enabled_t1", "sss_enabled_t2",
                 "cap_sss", "cap_easypass", "cap_eu", "cap_tcn",
-                "cap_sss_t1", "cap_easypass_t1", "cap_eu_t1", "cap_tcn_t1",
+                "cap_sss_t1", "cap_easypass_t1", "cap_eu_t1",
                 "mean_easypass_s", "sd_easypass_s", "mean_eu_s", "sd_eu_s",
-                "process_time_scale_pct", "tcn_at_policy", "seed", "sim_runs",
+                "process_time_scale_pct", "tcn_at_target", "changeover_s", "seed",
                 "threshold_pax_length_t1", "threshold_pax_length_t2",
                 "threshold_wait_s_t1", "threshold_wait_s_t2",
-                "mean_sss_vh_reg_s", "sd_sss_vh_reg_s",
-                "mean_sss_vh_unreg_s", "sd_sss_vh_unreg_s",
-                "mean_sss_ve_reg_s", "sd_sss_ve_reg_s",
-                "mean_sss_ve_unreg_s", "sd_sss_ve_unreg_s",
-                "mean_tcn_vh_reg_s", "sd_tcn_vh_reg_s",
-                "mean_tcn_vh_unreg_s", "sd_tcn_vh_unreg_s",
-                "mean_tcn_ve_reg_s", "sd_tcn_ve_reg_s",
-                "mean_tcn_ve_unreg_s", "sd_tcn_ve_unreg_s",
+                "mean_sss_s", "sd_sss_s",
+                "mu_tcn_v_reg_s", "sigma_tcn_v_reg_s",
+                "mu_tcn_v_unreg_s", "sigma_tcn_v_unreg_s",
+                "max_tcn_v_s",
             ]
+            intervals = ["06-09", "09-12", "12-15", "15-18", "18-21", "21-00"]
+            for interval in intervals:
+                keys_to_save.append(f"cap_tcn_t1_{interval}")
+                keys_to_save.append(f"cap_tcn_t2_{interval}")
             save_session_settings(keys_to_save)
             st.sidebar.success("✅ Einstellungen gespeichert.")
     with c2:

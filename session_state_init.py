@@ -4,13 +4,12 @@ import streamlit as st
 
 from passenger_data import (
     DEFAULT_MIX,
-    MEAN_SSS_VH_REG_S, SD_SSS_VH_REG_S, MEAN_SSS_VH_UNREG_S, SD_SSS_VH_UNREG_S,
-    MEAN_SSS_VE_REG_S, SD_SSS_VE_REG_S, MEAN_SSS_VE_UNREG_S, SD_SSS_VE_UNREG_S,
-    MEAN_TCN_VH_REG_S_SSS_ENABLED, SD_TCN_VH_REG_S_SSS_ENABLED, MEAN_TCN_VH_UNREG_S_SSS_ENABLED, SD_TCN_VH_UNREG_S_SSS_ENABLED,
-    MEAN_TCN_VH_REG_S_SSS_DISABLED, SD_TCN_VH_REG_S_SSS_DISABLED, MEAN_TCN_VH_UNREG_S_SSS_DISABLED, SD_TCN_VH_UNREG_S_SSS_DISABLED,
-    MEAN_TCN_VE_REG_S_SSS_ENABLED, SD_TCN_VE_REG_S_SSS_ENABLED, MEAN_TCN_VE_UNREG_S_SSS_ENABLED, SD_TCN_VE_UNREG_S_SSS_ENABLED,
-    MEAN_TCN_VE_REG_S_SSS_DISABLED, SD_TCN_VE_REG_S_SSS_DISABLED, MEAN_TCN_VE_UNREG_S_SSS_DISABLED, SD_TCN_VE_UNREG_S_SSS_DISABLED,
+    MEAN_SSS_S, SD_SSS_S,
+    MU_TCN_V_REG_S_SSS_ENABLED, SIGMA_TCN_V_REG_S_SSS_ENABLED, MU_TCN_V_UNREG_S_SSS_ENABLED, SIGMA_TCN_V_UNREG_S_SSS_ENABLED,
+    MU_TCN_V_REG_S_SSS_DISABLED, SIGMA_TCN_V_REG_S_SSS_DISABLED, MU_TCN_V_UNREG_S_SSS_DISABLED, SIGMA_TCN_V_UNREG_S_SSS_DISABLED,
+    MAX_TCN_V_S,
     MEAN_EASYPASS_S, SD_EASYPASS_S, MEAN_EU_S, SD_EU_S,
+    BUS_CAPACITY, BUS_FILL_TIME_MIN, BUS_TRAVEL_TIME_MIN,
 )
 import json
 from pathlib import Path
@@ -39,26 +38,31 @@ def init_session_state():
         "walk_speed_mean_mps": 1.25, "walk_speed_sd_mps": 0.25, "walk_speed_floor_mps": 0.5,
         "sss_enabled_t1": True,
         "sss_enabled_t2": True,
+        "bus_capacity": BUS_CAPACITY,
+        "bus_fill_time_min": BUS_FILL_TIME_MIN,
+        "bus_travel_time_min": BUS_TRAVEL_TIME_MIN,
         "cap_sss": 6, "cap_easypass": 6, "cap_eu": 2, "cap_tcn": 2,
-        "cap_sss_t1": 6, "cap_easypass_t1": 6, "cap_eu_t1": 2, "cap_tcn_t1": 2,
+        "cap_sss_t1": 4, "cap_easypass_t1": 4, "cap_eu_t1": 2,
         "mean_easypass_s": MEAN_EASYPASS_S, "sd_easypass_s": SD_EASYPASS_S,
         "mean_eu_s": MEAN_EU_S, "sd_eu_s": SD_EU_S,
         "process_time_scale_pct": 150,
-        "tcn_at_policy": "load",
+        "tcn_at_target": "EASYPASS",
+        "changeover_s": 0.0,
         "seed": 42,
-        "sim_runs": 10,
         "threshold_pax_length_t1": 50, "threshold_pax_length_t2": 50,
         "threshold_wait_s_t1": 60, "threshold_wait_s_t2": 60,
         # SSS/TCN Zeiten (Initialwerte)
-        "mean_sss_vh_reg_s": MEAN_SSS_VH_REG_S, "sd_sss_vh_reg_s": SD_SSS_VH_REG_S,
-        "mean_sss_vh_unreg_s": MEAN_SSS_VH_UNREG_S, "sd_sss_vh_unreg_s": SD_SSS_VH_UNREG_S,
-        "mean_sss_ve_reg_s": MEAN_SSS_VE_REG_S, "sd_sss_ve_reg_s": SD_SSS_VE_REG_S,
-        "mean_sss_ve_unreg_s": MEAN_SSS_VE_UNREG_S, "sd_sss_ve_unreg_s": SD_SSS_VE_UNREG_S,
-        "mean_tcn_vh_reg_s": MEAN_TCN_VH_REG_S_SSS_ENABLED, "sd_tcn_vh_reg_s": SD_TCN_VH_REG_S_SSS_ENABLED,
-        "mean_tcn_vh_unreg_s": MEAN_TCN_VH_UNREG_S_SSS_ENABLED, "sd_tcn_vh_unreg_s": SD_TCN_VH_UNREG_S_SSS_ENABLED,
-        "mean_tcn_ve_reg_s": MEAN_TCN_VE_REG_S_SSS_ENABLED, "sd_tcn_ve_reg_s": SD_TCN_VE_REG_S_SSS_ENABLED,
-        "mean_tcn_ve_unreg_s": MEAN_TCN_VE_UNREG_S_SSS_ENABLED, "sd_tcn_ve_unreg_s": SD_TCN_VE_UNREG_S_SSS_ENABLED,
+        "mean_sss_s": MEAN_SSS_S, "sd_sss_s": SD_SSS_S,
+        "mu_tcn_v_reg_s": MU_TCN_V_REG_S_SSS_ENABLED, "sigma_tcn_v_reg_s": SIGMA_TCN_V_REG_S_SSS_ENABLED,
+        "mu_tcn_v_unreg_s": MU_TCN_V_UNREG_S_SSS_ENABLED, "sigma_tcn_v_unreg_s": SIGMA_TCN_V_UNREG_S_SSS_ENABLED,
+        "max_tcn_v_s": MAX_TCN_V_S,
     }
+    
+    intervals = ["06-09", "09-12", "12-15", "15-18", "18-21", "21-00"]
+    for interval in intervals:
+        defaults[f"cap_tcn_t1_{interval}"] = 2
+    for interval in intervals:
+        defaults[f"cap_tcn_t2_{interval}"] = 2
 
     for k, v in defaults.items():
         if k not in st.session_state:
