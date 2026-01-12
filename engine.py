@@ -12,9 +12,11 @@ import simpy
 from passenger_data import (
     MEAN_SSS_S, SD_SSS_S,
     MU_TCN_V_REG_S_SSS_ENABLED, SIGMA_TCN_V_REG_S_SSS_ENABLED, MU_TCN_V_UNREG_S_SSS_ENABLED, SIGMA_TCN_V_UNREG_S_SSS_ENABLED,
-    MU_TCN_V_REG_S_SSS_DISABLED, SIGMA_TCN_V_REG_S_SSS_DISABLED, MU_TCN_V_UNREG_S_SSS_DISABLED, SIGMA_TCN_V_UNREG_S_SSS_DISABLED,
+    MU_TCN_V_REG_S_SSS_DISABLED, SIGMA_TCN_V_REG_S_SSS_DISABLED, MU_TCN_V_UNREG_S_SSS_DISABLED,
+    SIGMA_TCN_V_UNREG_S_SSS_DISABLED,
     MAX_TCN_V_S,
-    MEAN_EASYPASS_S, SD_EASYPASS_S, MEAN_EU_S, SD_EU_S,
+    MU_EASYPASS_S, SIGMA_EASYPASS_S, MAX_EASYPASS_S,
+    MU_EU_S, SIGMA_EU_S, MAX_EU_S,
     BUS_CAPACITY, BUS_FILL_TIME_MIN, BUS_TRAVEL_TIME_MIN,
 )
 from ppos_distances import PPOS_DISTANCE_M
@@ -37,6 +39,16 @@ class SimConfig:
     sigma_tcn_v_unreg_s: float
     max_tcn_v_s: float
 
+    # EASYPASS
+    mu_easypass_s: float
+    sigma_easypass_s: float
+    max_easypass_s: float
+
+    # EU
+    mu_eu_s: float
+    sigma_eu_s: float
+    max_eu_s: float
+
     # Kapazitäten
     cap_sss: int = 6
     cap_easypass: int = 8
@@ -51,12 +63,6 @@ class SimConfig:
     mean_sss_s: float = MEAN_SSS_S
     sd_sss_s: float = SD_SSS_S
 
-    # EASYPASS / EU
-    mean_easypass_s: float = MEAN_EASYPASS_S
-    sd_easypass_s: float = SD_EASYPASS_S
-    mean_eu_s: float = MEAN_EU_S
-    sd_eu_s: float = SD_EU_S
-   
     # Deboarding
     deboard_offset_min: float = 5.0
     deboard_window_min: float = 20.0
@@ -148,10 +154,10 @@ def _service_time_min(
 
     # ---- Easypass / EU unverändert ----
     if station == "EASYPASS":
-        return _pos_normal(rng, cfg.mean_easypass_s, cfg.sd_easypass_s) / 60.0
+        return _lognorm(rng, cfg.mu_easypass_s, cfg.sigma_easypass_s, cfg.max_easypass_s) / 60.0
 
     if station == "EU":
-        return _pos_normal(rng, cfg.mean_eu_s, cfg.sd_eu_s) / 60.0
+        return _lognorm(rng, cfg.mu_eu_s, cfg.sigma_eu_s, cfg.max_eu_s) / 60.0
 
     # ---- TCN: V x reg/unreg ----
     if station == "TCN":

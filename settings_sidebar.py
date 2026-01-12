@@ -1,11 +1,12 @@
 from __future__ import annotations
 import streamlit as st
-from passenger_data import DEFAULT_MIX, MEAN_EASYPASS_S, SD_EASYPASS_S, MEAN_EU_S, SD_EU_S
 from passenger_data import (
+    DEFAULT_MIX,
     MEAN_SSS_S, SD_SSS_S,
     MU_TCN_V_REG_S_SSS_ENABLED, SIGMA_TCN_V_REG_S_SSS_ENABLED, MU_TCN_V_UNREG_S_SSS_ENABLED, SIGMA_TCN_V_UNREG_S_SSS_ENABLED,
-    MU_TCN_V_REG_S_SSS_DISABLED, SIGMA_TCN_V_REG_S_SSS_DISABLED, MU_TCN_V_UNREG_S_SSS_DISABLED, SIGMA_TCN_V_UNREG_S_SSS_DISABLED,
-    MAX_TCN_V_S,
+    MU_TCN_V_REG_S_SSS_DISABLED, SIGMA_TCN_V_REG_S_SSS_DISABLED, MU_TCN_V_UNREG_S_SSS_DISABLED,
+    SIGMA_TCN_V_UNREG_S_SSS_DISABLED, MAX_TCN_V_S,
+    MU_EASYPASS_S, SIGMA_EASYPASS_S, MAX_EASYPASS_S, MU_EU_S, SIGMA_EU_S, MAX_EU_S,
 )
 from passenger_data import BUS_CAPACITY, BUS_FILL_TIME_MIN, BUS_TRAVEL_TIME_MIN
 from session_state_init import init_session_state, save_session_settings, load_session_settings
@@ -34,14 +35,12 @@ def _reset_all_settings():
         "bus_travel_time_min": BUS_TRAVEL_TIME_MIN,
         "cap_sss": 6, "cap_easypass": 6, "cap_eu": 2, "cap_tcn": 2,
         "cap_sss_t1": 4, "cap_easypass_t1": 4, "cap_eu_t1": 2,
-        "mean_easypass_s": MEAN_EASYPASS_S, "sd_easypass_s": SD_EASYPASS_S,
-        "mean_eu_s": MEAN_EU_S, "sd_eu_s": SD_EU_S,
+        "mu_easypass_s": MU_EASYPASS_S, "sigma_easypass_s": SIGMA_EASYPASS_S, "max_easypass_s": MAX_EASYPASS_S,
+        "mu_eu_s": MU_EU_S, "sigma_eu_s": SIGMA_EU_S, "max_eu_s": MAX_EU_S,
         "process_time_scale_pct": 100,
         "tcn_at_target": "EASYPASS",
         "changeover_s": 0.0,
         "seed": 42,
-        "threshold_pax_length_t1": 50, "threshold_pax_length_t2": 50,
-        "threshold_wait_s_t1": 60, "threshold_wait_s_t2": 60,
         "mean_sss_s": MEAN_SSS_S,
         "sd_sss_s": SD_SSS_S,
         "mu_tcn_v_reg_s": MU_TCN_V_REG_S_SSS_ENABLED, "sigma_tcn_v_reg_s": SIGMA_TCN_V_REG_S_SSS_ENABLED,
@@ -139,7 +138,7 @@ def render_settings_sidebar(show_sim_button: bool = False):
 
     # Deboarding
     with st.sidebar.expander("Deboarding"):
-        st.slider("Start nach SIBT [min] (Türen öffnen)", 0, 15, key="deboard_offset_min")
+        st.slider("Start nach BIBT [min] (Türen öffnen)", 0, 15, key="deboard_offset_min")
         st.slider("Deboarding-Fenster [min]", 1, 30, key="deboard_window_min")
 
     # Walk speed
@@ -190,10 +189,15 @@ def render_settings_sidebar(show_sim_button: bool = False):
                 st.number_input(f"T2 {interval}h", min_value=0, max_value=6, key=f"cap_tcn_t2_{interval}")
     # Process times (grouped in expanders)
     with st.sidebar.expander("Prozesszeiten (Easypass / EU)"):
-        st.number_input("Easypass Ø", min_value=1.0, step=1.0, key="mean_easypass_s")
-        st.number_input("Easypass Stdabw.", min_value=0.0, step=1.0, key="sd_easypass_s")
-        st.number_input("EU Ø", min_value=1.0, step=1.0, key="mean_eu_s")
-        st.number_input("EU Stdabw.", min_value=0.0, step=1.0, key="sd_eu_s")
+        st.markdown("**Easypass**")
+        st.number_input("Easypass (Lognormal μ)", min_value=0.0, step=0.01, format="%.2f", key="mu_easypass_s")
+        st.number_input("Easypass (Lognormal σ)", min_value=0.0, step=0.01, format="%.2f", key="sigma_easypass_s")
+        st.number_input("Easypass Max-Wert [s]", min_value=1.0, step=1.0, key="max_easypass_s")
+        st.markdown("---")
+        st.markdown("**EU**")
+        st.number_input("EU (Lognormal μ)", min_value=0.0, step=0.01, format="%.2f", key="mu_eu_s")
+        st.number_input("EU (Lognormal σ)", min_value=0.0, step=0.01, format="%.2f", key="sigma_eu_s")
+        st.number_input("EU Max-Wert [s]", min_value=1.0, step=1.0, key="max_eu_s")
 
     with st.sidebar.expander("Prozesszeiten (SSS)"):
         st.number_input("SSS Ø", min_value=1.0, step=1.0, key="mean_sss_s")
@@ -214,14 +218,6 @@ def render_settings_sidebar(show_sim_button: bool = False):
         st.number_input("Schalter-Wechselzeit [s]", min_value=0.0, step=0.5, key="changeover_s", help="Zeitlücke zwischen Passagieren an einem Schalter.")
         st.number_input("Random Seed", min_value=0, step=1, key="seed")
 
-    with st.sidebar.expander("Referenzlinien (für Plots)"):
-        st.markdown("**Terminal 1**")
-        st.slider("Warteschlange T1", 20, 300, key="threshold_pax_length_t1")
-        st.slider("Ø Wartezeit T1 [s]", 0, 120, key="threshold_wait_s_t1")
-        st.markdown("**Terminal 2**")
-        st.slider("Warteschlange T2", 20, 300, key="threshold_pax_length_t2")
-        st.slider("Ø Wartezeit T2 [s]", 0, 120, key="threshold_wait_s_t2")
-
     st.sidebar.markdown("---")
 
     # Save / Load buttons at the bottom
@@ -236,10 +232,9 @@ def render_settings_sidebar(show_sim_button: bool = False):
                 "sss_enabled_t1", "sss_enabled_t2",
                 "cap_sss", "cap_easypass", "cap_eu", "cap_tcn",
                 "cap_sss_t1", "cap_easypass_t1", "cap_eu_t1",
-                "mean_easypass_s", "sd_easypass_s", "mean_eu_s", "sd_eu_s",
+                "mu_easypass_s", "sigma_easypass_s", "max_easypass_s",
+                "mu_eu_s", "sigma_eu_s", "max_eu_s",
                 "process_time_scale_pct", "tcn_at_target", "changeover_s", "seed",
-                "threshold_pax_length_t1", "threshold_pax_length_t2",
-                "threshold_wait_s_t1", "threshold_wait_s_t2",
                 "mean_sss_s", "sd_sss_s",
                 "mu_tcn_v_reg_s", "sigma_tcn_v_reg_s",
                 "mu_tcn_v_unreg_s", "sigma_tcn_v_unreg_s",

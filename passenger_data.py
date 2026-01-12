@@ -19,11 +19,15 @@ SIGMA_TCN_V_UNREG_S_SSS_DISABLED = 0.54
 # TCN manual - TCN V - Max value cap
 MAX_TCN_V_S = 180.0
 
-# Easypass / EU
-MEAN_EASYPASS_S = 15.0
-SD_EASYPASS_S = 4.5
-MEAN_EU_S = 19.0
-SD_EU_S = 5.7
+# Easypass - Lognormal parameters
+MU_EASYPASS_S = 2.76
+SIGMA_EASYPASS_S = 0.34
+MAX_EASYPASS_S = 90.0
+
+# EU - Lognormal parameters
+MU_EU_S = 3.76
+SIGMA_EU_S = 0.5
+MAX_EU_S = 180.0
 
 # =========================================================
 # Bus-Transport (für unbekannte PPOS)

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from typing import Optional
 import streamlit as st
 
 from passenger_data import (
     DEFAULT_MIX,
     MEAN_SSS_S, SD_SSS_S,
-    MU_TCN_V_REG_S_SSS_ENABLED, SIGMA_TCN_V_REG_S_SSS_ENABLED, MU_TCN_V_UNREG_S_SSS_ENABLED, SIGMA_TCN_V_UNREG_S_SSS_ENABLED,
-    MU_TCN_V_REG_S_SSS_DISABLED, SIGMA_TCN_V_REG_S_SSS_DISABLED, MU_TCN_V_UNREG_S_SSS_DISABLED, SIGMA_TCN_V_UNREG_S_SSS_DISABLED,
-    MAX_TCN_V_S,
-    MEAN_EASYPASS_S, SD_EASYPASS_S, MEAN_EU_S, SD_EU_S,
+    MU_TCN_V_REG_S_SSS_ENABLED, SIGMA_TCN_V_REG_S_SSS_ENABLED, MU_TCN_V_UNREG_S_SSS_ENABLED,
+    SIGMA_TCN_V_UNREG_S_SSS_ENABLED, MU_TCN_V_REG_S_SSS_DISABLED, SIGMA_TCN_V_REG_S_SSS_DISABLED,
+    MU_TCN_V_UNREG_S_SSS_DISABLED, SIGMA_TCN_V_UNREG_S_SSS_DISABLED, MAX_TCN_V_S,
+    MU_EASYPASS_S, SIGMA_EASYPASS_S, MAX_EASYPASS_S, MU_EU_S, SIGMA_EU_S, MAX_EU_S,
     BUS_CAPACITY, BUS_FILL_TIME_MIN, BUS_TRAVEL_TIME_MIN,
 )
 import json
@@ -43,14 +44,12 @@ def init_session_state():
         "bus_travel_time_min": BUS_TRAVEL_TIME_MIN,
         "cap_sss": 6, "cap_easypass": 6, "cap_eu": 2, "cap_tcn": 2,
         "cap_sss_t1": 4, "cap_easypass_t1": 4, "cap_eu_t1": 2,
-        "mean_easypass_s": MEAN_EASYPASS_S, "sd_easypass_s": SD_EASYPASS_S,
-        "mean_eu_s": MEAN_EU_S, "sd_eu_s": SD_EU_S,
+        "mu_easypass_s": MU_EASYPASS_S, "sigma_easypass_s": SIGMA_EASYPASS_S, "max_easypass_s": MAX_EASYPASS_S,
+        "mu_eu_s": MU_EU_S, "sigma_eu_s": SIGMA_EU_S, "max_eu_s": MAX_EU_S,
         "process_time_scale_pct": 150,
         "tcn_at_target": "EASYPASS",
         "changeover_s": 0.0,
         "seed": 42,
-        "threshold_pax_length_t1": 50, "threshold_pax_length_t2": 50,
-        "threshold_wait_s_t1": 60, "threshold_wait_s_t2": 60,
         # SSS/TCN Zeiten (Initialwerte)
         "mean_sss_s": MEAN_SSS_S, "sd_sss_s": SD_SSS_S,
         "mu_tcn_v_reg_s": MU_TCN_V_REG_S_SSS_ENABLED, "sigma_tcn_v_reg_s": SIGMA_TCN_V_REG_S_SSS_ENABLED,
@@ -70,7 +69,7 @@ def init_session_state():
             st.session_state[k] = saved.get(k, v)
 
 
-def save_session_settings(keys: list[str] | None = None) -> None:
+def save_session_settings(keys: Optional[list[str]] = None) -> None:
     """Save specified keys from session_state to a JSON file. If keys is None, save all simple keys."""
     out: dict = {}
     if keys is None:
