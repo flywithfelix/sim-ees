@@ -1,4 +1,12 @@
 from __future__ import annotations
+"""
+Kernmodul der Simulations-Engine.
+
+Dieses Modul enthält die zentrale Logik für die diskrete Ereignissimulation
+des Grenzkontrollprozesses mittels `simpy`. Es definiert die Datenstrukturen
+für die Konfiguration und die Ergebnisse, die Simulationsprozesse für Passagiere
+und die dynamische Ressourcenverwaltung.
+"""
 from collections import Counter, defaultdict
 import math
 
@@ -16,7 +24,7 @@ from passenger_data import (
     SIGMA_TCN_V_UNREG_S_SSS_DISABLED,
     MAX_TCN_V_S,
     MU_EASYPASS_S, SIGMA_EASYPASS_S, MAX_EASYPASS_S,
-    MU_EU_S, SIGMA_EU_S, MAX_EU_S,
+    MU_EU_S, SIGMA_EU_S, MAX_EU_S, DEBOARD_DELAY_MIN_S, DEBOARD_DELAY_MAX_S,
     BUS_CAPACITY, BUS_FILL_TIME_MIN, BUS_TRAVEL_TIME_MIN,
 )
 from ppos_distances import PPOS_DISTANCE_M
@@ -26,13 +34,16 @@ from ppos_distances import PPOS_DISTANCE_M
 GROUPS = ["EASYPASS", "EU_MANUAL", "TCN_AT", "TCN_V"]
 
 
-# =========================
-# Konfiguration
-# =========================
+# =========================================================
+# Datenstrukturen: Konfiguration und Ergebnisse
+# =========================================================
 @dataclass
 class SimConfig:
-    # Zeitabhängige TCN Kapazität
-    cap_tcn_schedule: dict[str, int]
+    """Datenklasse zur Speicherung aller Konfigurationsparameter für einen Simulationslauf."""
+    
+    # Zeitabhängige Kapazitätspläne
+    cap_tcn_schedule: dict[str, int] # Zeitplan für TCN-Schalter
+    cap_eu_schedule: dict[str, int]
     mu_tcn_v_reg_s: float
     sigma_tcn_v_reg_s: float
     mu_tcn_v_unreg_s: float
@@ -52,7 +63,6 @@ class SimConfig:
     # Kapazitäten
     cap_sss: int = 6
     cap_easypass: int = 8
-    cap_eu: int = 6
 
     # EES-Verteilung (nur für TCN_V)
     ees_registered_share: float = 0.75
@@ -65,8 +75,8 @@ class SimConfig:
 
     # Deboarding
     deboard_offset_min: float = 5.0
-    deboard_window_min: float = 20.0
-
+    deboard_delay_min_s: int = DEBOARD_DELAY_MIN_S
+    deboard_delay_max_s: int = DEBOARD_DELAY_MAX_S
     # Zeit für das Verlassen und Betreten des Schalters (in Sekunden)
     changeover_s: float = 0.0
 
@@ -94,6 +104,8 @@ class SimConfig:
 # =========================
 @dataclass
 class PassengerResult:
+    """Datenklasse zur Speicherung der detaillierten Ergebnisse für einen einzelnen Passagier."""
+    
     flight_key: str
     fln: str
     ppos: str
@@ -121,10 +133,11 @@ class PassengerResult:
     ees_status: str | None = None  # "EES_registered" | "EES_unregistered" | None
 
 
-# =========================
-# Hilfsfunktionen
-# =========================
+# =========================================================
+# Statistische Hilfsfunktionen
+# =========================================================
 def _pos_normal(rng: random.Random, mean: float, sd: float, floor: float = 0.05) -> float:
+    """Generiert eine normalverteilte Zufallszahl, die nicht unter `floor` fällt."""
     return max(floor, rng.normalvariate(mean, sd))
 
 
@@ -146,7 +159,19 @@ def _service_time_min(
     group: str | None = None,
     ees_status: str | None = None,
 ) -> float:
-    """Servicezeit in Minuten (Input in Sekunden)."""
+    """
+    Berechnet die Servicezeit für eine gegebene Station in Minuten.
+
+    Args:
+        cfg: Die Simulationskonfiguration.
+        rng: Der Zufallszahlengenerator.
+        station: Der Name der Station (z.B. "SSS", "TCN").
+        group: Die Passagiergruppe (relevant für TCN).
+        ees_status: Der EES-Status des Passagiers (relevant für TCN).
+
+    Returns:
+        Die Servicezeit in Minuten.
+    """
 
     # ---- SSS ----
     if station == "SSS":
@@ -174,16 +199,28 @@ def _service_time_min(
 
 
 def _walk_time_min(cfg: SimConfig, rng: random.Random, distance_m: float) -> float:
+    """Berechnet die Gehzeit eines Passagiers für eine gegebene Distanz in Minuten."""
     speed = max(cfg.walk_speed_floor_mps, rng.normalvariate(cfg.walk_speed_mean_mps, cfg.walk_speed_sd_mps))
     seconds = distance_m / speed
     return seconds / 60.0
 
 
-# =========================
-# Modell
-# =========================
+# =========================================================
+# Simulationsmodell
+# =========================================================
 class _DisabledResource:
-    """Lightweight shim that mimics parts of simpy.Resource for a disabled station.
+    """
+    Ein Platzhalter für eine deaktivierte `simpy.Resource`.
+
+    Diese Klasse imitiert die grundlegende API einer `simpy.Resource`, um zu
+    verhindern, dass der Code für die Anforderung von Ressourcen geändert werden
+    muss, wenn eine Station deaktiviert ist. Anfragen werden sofort mit einer
+    Verzögerung von 0 erfüllt.
+
+    Attributes:
+        queue (list): Immer eine leere Liste.
+        count (int): Immer 0.
+        capacity (int): Immer 0.
 
     - `queue`, `count`, `capacity` attributes are present for snapshot inspection.
     - `request()` returns a context manager whose __enter__ returns an immediately triggered
@@ -212,6 +249,13 @@ class _DisabledResource:
         return _DisabledResource._ReqCtx(self._env)
 
 class BorderControlModel:
+    """
+    Das Kernmodell der Grenzkontrollsimulation.
+
+    Diese Klasse initialisiert und verwaltet alle `simpy`-Ressourcen (Schalter),
+    enthält die Logik für die Passagierprozesse und sammelt die Ergebnisse.
+    """
+    
     def __init__(self, env: simpy.Environment, cfg: SimConfig, rng: random.Random, t0: pd.Timestamp):
         self.env = env
         self.cfg = cfg
@@ -224,7 +268,6 @@ class BorderControlModel:
         else:
             self.sss = _DisabledResource(env)
         self.easypass = simpy.Resource(env, capacity=cfg.cap_easypass)
-        self.eu = simpy.PriorityResource(env, capacity=cfg.cap_eu)
         
         # TCN wird als Store mit zeitlich variabler Kapazität modelliert
         self.tcn = simpy.Store(env)
@@ -232,22 +275,44 @@ class BorderControlModel:
         self.current_tcn_capacity = 0
         self.env.process(self.tcn_capacity_manager())
 
+        # EU wird ebenfalls als Store mit zeitlich variabler Kapazität modelliert,
+        # um die Priorisierungslogik (EU > TCN_V) zu erhalten, enthält der Store
+        # einzelne PriorityResources.
+        self.eu = simpy.Store(env)
+        self.eu_in_use = 0
+        self.current_eu_capacity = 0
+        self.eu_manual_wait_count = 0
+        self.env.process(self.eu_capacity_manager())
+
         self.results: List[PassengerResult] = []
         self.queue_ts: List[Dict[str, Any]] = []
 
     def snapshot(self):
+        """Erstellt einen Schnappschuss der aktuellen Warteschlangenlängen und Ressourcennutzung."""
         self.queue_ts.append({
             "t_min": float(self.env.now),
             "q_sss": len(self.sss.queue), "in_sss": self.sss.count,
             "q_easypass": len(self.easypass.queue), "in_easypass": self.easypass.count,
-            "q_eu": len(self.eu.queue), "in_eu": self.eu.count,
+            "q_eu": len(self.eu.get_queue), "in_eu": self.eu_in_use,
             "q_tcn": len(self.tcn.get_queue), "in_tcn": self.tcn_in_use,
         })
 
     def eu_manual_waiting(self) -> bool:
-        return any(getattr(req, "priority", 99) == 0 for req in self.eu.queue)
+        """Prüft, ob aktuell Passagiere der Gruppe EU_MANUAL auf einen Schalter warten."""
+        return self.eu_manual_wait_count > 0
 
     def do_station(self, station: str, pr: PassengerResult, eu_priority: int = 0):
+        """
+        Simuliert den Prozess des Anforderns und Nutzens einer Servicestation.
+
+        Dieser Generator-Prozess kümmert sich um das Anstellen, Warten,
+        die Service-Abwicklung und das Sammeln der entsprechenden Zeitstempel.
+
+        Args:
+            station: Die zu nutzende Station (z.B. "SSS", "EU").
+            pr: Das Ergebnisobjekt des Passagiers, in das die Zeiten geschrieben werden.
+            eu_priority: Die Priorität für den EU-Schalter (0 für EU_MANUAL, 1 für TCN_V).
+        """
         self.snapshot()
         t_arr = float(self.env.now)
         changeover_min = self.cfg.changeover_s / 60.0
@@ -277,13 +342,26 @@ class BorderControlModel:
             pr.serv_easypass += serv
 
         elif station == "EU":
-            with self.eu.request(priority=eu_priority) as req:
+            if eu_priority == 0:
+                self.eu_manual_wait_count += 1
+            
+            # Einen verfügbaren EU-Schalter (als PriorityResource) aus dem Store holen
+            server_resource = yield self.eu.get()
+            self.eu_in_use += 1
+            self.snapshot()
+
+            with server_resource.request(priority=eu_priority) as req:
                 yield req
+                if eu_priority == 0:
+                    self.eu_manual_wait_count -= 1
                 t_start = float(self.env.now)
                 serv = _service_time_min(self.cfg, self.rng, "EU")
                 yield self.env.timeout(serv)
                 if changeover_min > 0:
                     yield self.env.timeout(changeover_min)
+            
+            yield self.eu.put(server_resource)
+            self.eu_in_use -= 1
             pr.used_eu = True
             pr.wait_eu += t_start - t_arr
             pr.serv_eu += serv
@@ -308,20 +386,29 @@ class BorderControlModel:
         self.snapshot()
 
     def tcn_capacity_manager(self):
-        """Ein Prozess, der die Kapazität der TCN-Station über die Zeit anpasst."""
+        """
+        Ein `simpy`-Prozess, der die Kapazität der TCN-Station dynamisch anpasst.
+
+        Dieser Prozess liest den Kapazitätsplan aus der Konfiguration und fügt
+        zum richtigen Zeitpunkt Server-Ressourcen zum `simpy.Store` hinzu oder entfernt sie.
+        """
         
         # 1. Parse schedule from config
         schedule_parsed = []
         for key, cap in self.cfg.cap_tcn_schedule.items():
-            start_h_str, end_h_str = key.split('-')
-            start_h = int(start_h_str)
-            start_min_of_day = start_h * 60
+            start_str, _ = key.split('-') # Wir brauchen nur die Startzeit, z.B. "06:15"
+            if ':' in start_str:
+                start_h, start_m = map(int, start_str.split(':'))
+            else:
+                start_h = int(start_str)
+                start_m = 0
+            start_min_of_day = start_h * 60 + start_m
             schedule_parsed.append((start_min_of_day, cap))
         schedule_parsed.sort()
 
         # 2. Determine initial capacity at simulation start (t=0)
         sim_start_time_of_day_min = self.t0.hour * 60 + self.t0.minute
-        initial_cap = schedule_parsed[-1][1] # Default to last entry if before first
+        initial_cap = schedule_parsed[-1][1] if schedule_parsed else 0 # Default to last entry if before first
         for start_min, cap in schedule_parsed:
             if sim_start_time_of_day_min >= start_min:
                 initial_cap = cap
@@ -357,7 +444,75 @@ class BorderControlModel:
                     yield self.tcn.get()
             self.current_tcn_capacity = new_cap
 
+    def eu_capacity_manager(self):
+        """
+        Ein `simpy`-Prozess, der die Kapazität der EU-Station dynamisch anpasst.
+
+        Dieser Prozess liest den Kapazitätsplan aus der Konfiguration und fügt
+        zum richtigen Zeitpunkt `simpy.PriorityResource`-Objekte zum `simpy.Store` hinzu oder entfernt sie.
+        """
+        
+        # 1. Parse schedule from config
+        schedule_parsed = []
+        for key, cap in self.cfg.cap_eu_schedule.items():
+            start_str, _ = key.split('-')
+            if ':' in start_str:
+                start_h, start_m = map(int, start_str.split(':'))
+            else:
+                start_h = int(start_str)
+                start_m = 0
+            start_min_of_day = start_h * 60 + start_m
+            schedule_parsed.append((start_min_of_day, cap))
+        schedule_parsed.sort()
+
+        # 2. Determine initial capacity at simulation start (t=0)
+        sim_start_time_of_day_min = self.t0.hour * 60 + self.t0.minute
+        initial_cap = schedule_parsed[-1][1] if schedule_parsed else 0
+        for start_min, cap in schedule_parsed:
+            if sim_start_time_of_day_min >= start_min:
+                initial_cap = cap
+        
+        self.current_eu_capacity = initial_cap
+        for i in range(initial_cap):
+            yield self.eu.put(simpy.PriorityResource(self.env, capacity=1))
+
+        # 3. Eine Liste aller zukünftigen Kapazitätsänderungen erstellen
+        events = []
+        for change_time_min, new_cap in schedule_parsed:
+            events.append((self.t0.normalize() + pd.Timedelta(minutes=change_time_min), new_cap))
+            events.append((self.t0.normalize() + pd.Timedelta(days=1, minutes=change_time_min), new_cap))
+        
+        future_events = sorted([e for e in events if e[0] > self.t0])
+
+        # 4. Zukünftige Events sequenziell abarbeiten
+        for change_datetime, new_cap in future_events:
+            sim_time_for_change = (change_datetime - self.t0).total_seconds() / 60.0
+            delay = sim_time_for_change - self.env.now
+            if delay > 0:
+                yield self.env.timeout(delay)
+
+            diff = new_cap - self.current_eu_capacity
+            if diff > 0:
+                for i in range(diff):
+                    yield self.eu.put(simpy.PriorityResource(self.env, capacity=1))
+            elif diff < 0:
+                for _ in range(abs(diff)):
+                    yield self.eu.get()
+            self.current_eu_capacity = new_cap
+
     def passenger_process(self, flight_key: str, fln: str, ppos: str, pax_id: int, group: str, ees_status: str | None = None, transport_mode: str = "Walk"):
+        """
+        Der Hauptprozess für einen einzelnen Passagier.
+
+        Dieser Prozess steuert den gesamten Weg eines Passagiers durch das System,
+        von der Ankunft an der Grenzkontrolle bis zum Verlassen. Er entscheidet
+        basierend auf der Passagiergruppe, welche Stationen in welcher Reihenfolge
+        besucht werden.
+
+        Args:
+            Alle Argumente beschreiben den Passagier und seinen Ankunftskontext.
+        """
+
         arrival = float(self.env.now)
         pr = PassengerResult(
             flight_key=flight_key,
@@ -402,11 +557,13 @@ class BorderControlModel:
 
     def control_summary(self) -> dict:
         """
-        Kontrollwerte am Ende der Simulation:
-        - Anzahl & Anteil je Gruppe
-        - optional: Aufsplittung für TCN_V nach EES_registered/unregistered
-        - optional: Anzahl je Flug (flight_key)
+        Erstellt eine zusammenfassende Statistik nach Abschluss der Simulation.
+
+        Returns:
+            Ein Dictionary mit aggregierten Daten, z.B. Passagieranzahl pro Gruppe,
+            pro Flug und ein Soll-Ist-Vergleich des Passagiermixes.
         """
+
         total = len(self.results)
 
         # 1) counts je Gruppe
@@ -474,10 +631,13 @@ class BorderControlModel:
 
 
 
-# =========================
-# Flug- & Passagiererzeugung
-# =========================
+# =========================================================
+# Generatoren für Flüge und Passagiere
+# =========================================================
 def assign_groups(cfg: SimConfig, rng: random.Random, n: int) -> List[str]:
+    """
+    Weist `n` Passagieren zufällig eine Gruppe basierend auf dem konfigurierten Mix zu.
+    """
     weights = [
         cfg.share_easypass,
         cfg.share_eu_manual,
@@ -488,6 +648,13 @@ def assign_groups(cfg: SimConfig, rng: random.Random, n: int) -> List[str]:
 
 
 def schedule_flights(env: simpy.Environment, model: BorderControlModel, flights: List[Dict[str, Any]]):
+    """
+    Plant die Ankunft aller Flüge und ihrer Passagiere in der Simulation.
+
+    Für jeden Flug wird ein eigener `simpy`-Prozess (`flight_proc`) gestartet,
+    der wiederum die Ankunft der einzelnen Passagiere dieses Fluges plant.
+    """
+    
     def flight_proc(f: Dict[str, Any]):
         # Warten bis SIBT (relativ)
         yield env.timeout(max(0.0, f["t_arr_min"] - env.now))
@@ -500,16 +667,23 @@ def schedule_flights(env: simpy.Environment, model: BorderControlModel, flights:
         ppos = str(f["ppos"])
 
         if distance_m > 0:
-            # Passagiere gehen zu Fuß
+            # Passagiere gehen zu Fuß (sequenzielles Deboarding)
             transport_mode = "Walk"
+            
+            # Kumulativer Deboarding-Delay, startet mit dem Offset
+            cumulative_deboard_delay_min = model.cfg.deboard_offset_min
+            
             for i, g in enumerate(groups, start=1):
-                # 5 Min Türen öffnen (= deboard_offset_min) + Deboarding-Verteilung im Fenster
-                deboard_delay = (
-                    model.cfg.deboard_offset_min
-                    + model.rng.random() * model.cfg.deboard_window_min
-                )
-                # Fußweg zur Grenzkontrolle (abhängig von PPOS und individueller Gehgeschwindigkeit)
+                # Addiere die Verzögerung zwischen Passagieren (außer für den ersten)
+                if i > 1:
+                    inter_pax_delay_s = model.rng.randint(
+                        model.cfg.deboard_delay_min_s,
+                        model.cfg.deboard_delay_max_s
+                    )
+                    cumulative_deboard_delay_min += inter_pax_delay_s / 60.0
+
                 walk_delay = _walk_time_min(model.cfg, model.rng, distance_m)
+                
                 # EES-Status für TCN-Gruppen
                 ees_status = None
                 if g in ("TCN_V", "TCN_AT"):
@@ -517,26 +691,46 @@ def schedule_flights(env: simpy.Environment, model: BorderControlModel, flights:
                         ees_status = "EES_registered"
                     else:
                         ees_status = "EES_unregistered"
-                total_delay = deboard_delay + walk_delay
+                
+                total_delay = cumulative_deboard_delay_min + walk_delay
                 env.process(spawn_after(total_delay, f["flight_key"], f["fln"], ppos, i, g, ees_status, transport_mode))
         else:
             # Passagiere werden mit dem Bus gefahren
             transport_mode = "Bus"
             bus_capacity = model.cfg.bus_capacity
-            bus_fill_time = model.cfg.bus_fill_time_min
+            bus_fill_time_max_min = model.cfg.bus_fill_time_min
             bus_travel_time = model.cfg.bus_travel_time_min
-            
-            for i, g in enumerate(groups, start=1):
-                bus_index = (i - 1) // bus_capacity  # 0-indizierter Bus
-                bus_arrival_delay = (
-                    model.cfg.deboard_offset_min
-                    + (bus_index + 1) * bus_fill_time
-                    + bus_travel_time
-                )
-                ees_status = None
-                if g in ("TCN_V", "TCN_AT"):
-                    ees_status = "EES_registered" if model.rng.random() < model.cfg.ees_registered_share else "EES_unregistered"
-                env.process(spawn_after(bus_arrival_delay, f["flight_key"], f["fln"], ppos, i, g, ees_status, transport_mode))
+
+            num_buses = math.ceil(pax / bus_capacity)
+            # Die Füllzeit des ersten Busses beginnt nach dem initialen Offset
+            last_bus_departure_time_min = model.cfg.deboard_offset_min
+
+            for bus_idx in range(num_buses):
+                start_pax_idx = bus_idx * bus_capacity
+                end_pax_idx = min((bus_idx + 1) * bus_capacity, pax)
+                pax_in_this_bus = end_pax_idx - start_pax_idx
+
+                # Füllzeit ist proportional zur Anzahl der Passagiere in diesem Bus.
+                current_bus_fill_time = (pax_in_this_bus / bus_capacity) * bus_fill_time_max_min
+                
+                # Abfahrtszeit des Busses = Abfahrt des letzten Busses + Füllzeit des aktuellen.
+                current_bus_departure_time_min = last_bus_departure_time_min + current_bus_fill_time
+                
+                # Ankunftszeit an der Grenzkontrolle.
+                bus_arrival_at_border_min = current_bus_departure_time_min + bus_travel_time
+
+                # Alle Passagiere dieses Busses schedulen, sie kommen als Bulk an.
+                for i in range(start_pax_idx, end_pax_idx):
+                    g = groups[i]
+                    pax_id = i + 1
+                    
+                    ees_status = None
+                    if g in ("TCN_V", "TCN_AT"):
+                        ees_status = "EES_registered" if model.rng.random() < model.cfg.ees_registered_share else "EES_unregistered"
+                    env.process(spawn_after(bus_arrival_at_border_min, f["flight_key"], f["fln"], ppos, pax_id, g, ees_status, transport_mode))
+
+                # Abfahrtszeit für die nächste Iteration (Bus) aktualisieren.
+                last_bus_departure_time_min = current_bus_departure_time_min
 
     def spawn_after(delay: float, flight_key: str, fln: str, ppos: str, pax_id: int, group: str, ees_status: str | None, transport_mode: str):
         yield env.timeout(delay)
@@ -548,9 +742,9 @@ def schedule_flights(env: simpy.Environment, model: BorderControlModel, flights:
 
 
 
-# =========================
-# Runner
-# =========================
+# =========================================================
+# Simulations-Runner
+# =========================================================
 def run_simulation(
     flights: List[Dict[str, Any]],
     cfg: SimConfig,
@@ -558,6 +752,19 @@ def run_simulation(
     seed: int = 42,
     until_min: Optional[float] = None,
 ) -> BorderControlModel:
+    """
+    Initialisiert und startet einen vollständigen Simulationslauf.
+
+    Args:
+        flights: Eine Liste von Flügen, die simuliert werden sollen.
+        cfg: Die Konfiguration für diesen Simulationslauf.
+        t0: Der absolute Startzeitpunkt der Simulation (t=0).
+        seed: Der Seed für den Zufallszahlengenerator.
+        until_min: Die maximale Simulationsdauer in Minuten.
+
+    Returns:
+        Das `BorderControlModel`-Objekt mit allen Ergebnissen.
+    """
     rng = random.Random(seed)
     env = simpy.Environment()
     model = BorderControlModel(env, cfg, rng, t0)
@@ -568,8 +775,8 @@ def run_simulation(
         until_min = (
             max_arr
             + cfg.deboard_offset_min
-            + cfg.deboard_window_min
-            + 240.0
+            + 60.0  # Generischer Puffer für die maximale Deboarding-Dauer
+            + 240.0 # Generischer Puffer für Prozess- und Wartezeiten
         )
 
     env.run(until=until_min)

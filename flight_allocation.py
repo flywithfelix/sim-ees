@@ -1,5 +1,11 @@
-# Zuteilung der Flüge auf Terminals (T1 vs T2)
-# PPOS-Werte für T1 und T2. Fallback auf Spalte 'T' (1 -> T1, 2/Null -> T2)
+"""
+Definition der statischen Flug-zu-Terminal-Zuweisung.
+
+Dieses Modul enthält ein Dictionary, das festlegt, welche Parkpositionen (PPOS)
+standardmäßig welchem Terminal (T1 oder T2) zugeordnet sind. Flüge von
+Positionen, die hier nicht aufgeführt sind, werden standardmäßig T2 zugewiesen.
+"""
+
 FLIGHT_ALLOCATION = {
     "T1": {
         "ppos": ["01", "01A", "01B", "02", "02A", "02B"],

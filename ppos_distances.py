@@ -1,4 +1,10 @@
-# Feste Wegstrecken (Meter) je PPOS zur Grenzkontrolle
+"""
+Definition der festen Wegstrecken von den Parkpositionen zur Grenzkontrolle.
+
+Dieses Modul enthält ein Dictionary, das für jede Parkposition (PPOS) die
+entsprechende Gehdistanz in Metern zur Grenzkontrollstelle speichert.
+"""
+
 PPOS_DISTANCE_M = {
     "01": 165.0,
     "01A": 200.0,

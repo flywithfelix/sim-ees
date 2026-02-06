@@ -1,3 +1,10 @@
+"""
+Modul für alle Plotting-Funktionen der Anwendung.
+
+Dieses Modul enthält Funktionen zur Erstellung verschiedener Diagramme
+mittels Plotly, wie z.B. Zeitreihen, Heatmaps und Balkendiagramme,
+um die Simulationsergebnisse zu visualisieren.
+"""
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -9,10 +16,11 @@ if TYPE_CHECKING:
 
 
 def _to_time_axis(t0: pd.Timestamp, t_min_series: pd.Series) -> pd.Series:
+    """Konvertiert eine Serie von relativen Minuten in absolute Zeitstempel."""
     return t0 + pd.to_timedelta(t_min_series, unit="m")
 
 # =========================================================
-# Plotting Colors
+# Farbdefinitionen für Diagramme
 # =========================================================
 STATION_COLORS = {
     "SSS (Kiosk)": "#f27527",  # Orange
@@ -26,6 +34,14 @@ TERMINAL_COLORS = {
     "T2": "#00A8A1"
 }
 
+QUEUE_HEATMAP_COLORS = [
+    '#0962A9',  # <= 10 pax
+    '#3F79A8',  # 11-25 pax
+    '#7F8B7A',  # 26-50 pax
+    '#C48A3F',  # 51-100 pax
+    '#EF7C00',  # > 100 pax
+]
+
 HEATMAP_COLORS = [
     '#0962A9',  # <= 10 min
     '#3F79A8',  # 11-20 min
@@ -34,8 +50,28 @@ HEATMAP_COLORS = [
     '#EF7C00',  # > 45 min
 ]
 
+def get_queue_heatmap_colorscale(zmax_val: float = 150.0) -> list:
+    """Erstellt eine diskrete Farbskala für die Heatmap der Warteschlangenlänge."""
+    return [
+        # Range 1: <= 10 pax
+        [0.0, QUEUE_HEATMAP_COLORS[0]],
+        [10/zmax_val, QUEUE_HEATMAP_COLORS[0]],
+        # Range 2: > 10 to <= 25 pax
+        [10/zmax_val, QUEUE_HEATMAP_COLORS[1]],
+        [25/zmax_val, QUEUE_HEATMAP_COLORS[1]],
+        # Range 3: > 25 to <= 50 pax
+        [25/zmax_val, QUEUE_HEATMAP_COLORS[2]],
+        [50/zmax_val, QUEUE_HEATMAP_COLORS[2]],
+        # Range 4: > 50 to <= 100 pax
+        [50/zmax_val, QUEUE_HEATMAP_COLORS[3]],
+        [100/zmax_val, QUEUE_HEATMAP_COLORS[3]],
+        # Range 5: > 100 pax
+        [100/zmax_val, QUEUE_HEATMAP_COLORS[4]],
+        [1.0, QUEUE_HEATMAP_COLORS[4]],
+    ]
+
 def get_heatmap_colorscale(zmax_val: float = 60.0) -> list:
-    """Creates the discrete colorscale for the wait time heatmap."""
+    """Erstellt eine diskrete Farbskala für die Heatmap der Wartezeit."""
     return [
         # Range 1: <= 10 min
         [0.0, HEATMAP_COLORS[0]],
@@ -54,6 +90,10 @@ def get_heatmap_colorscale(zmax_val: float = 60.0) -> list:
         [1.0, HEATMAP_COLORS[4]],
     ]
 
+# =========================================================
+# Datenaufbereitungs-Funktionen für Diagramme
+# =========================================================
+
 def _build_rolling_mean_timeseries(
     df_data: pd.DataFrame,
     t0: pd.Timestamp,
@@ -62,28 +102,26 @@ def _build_rolling_mean_timeseries(
     window_min: int = 15,
     step_min: int = 1,
 ) -> pd.DataFrame:
-    """Calculates a rolling mean over a time series on a fixed time grid.
+    """
+    Berechnet einen gleitenden Mittelwert über eine Zeitreihe auf einem festen Zeitraster.
 
-    This function implements an efficient two-pointer algorithm to calculate
-    the rolling mean of a value column over a specified time window. The
-    calculation is performed on a fixed time grid from 06:00 to 24:00 on the
-    day of the simulation start time (t0).
+    Diese Funktion verwendet einen effizienten Zwei-Zeiger-Algorithmus, um den
+    gleitenden Mittelwert einer Wertespalte über ein definiertes Zeitfenster zu
+    berechnen. Die Berechnung erfolgt auf einem festen Zeitraster von 06:00 bis 24:00 Uhr
+    am Tag des Simulationsstarts (t0).
 
     Args:
-        df_data: The input DataFrame containing the time and value data.
-        t0: The reference start time of the simulation (t=0), used to
-            establish the absolute time grid.
-        time_col: The name of the column in `df_data` with time values
-            (in minutes relative to t0).
-        value_col: The name of the column in `df_data` with values to be
-            averaged.
-        window_min: The size of the rolling window in minutes. The mean is
-            calculated for data points in the interval (t - window_min, t].
-        step_min: The step size for the output time grid in minutes.
+        df_data: DataFrame mit den Zeit- und Wertedaten.
+        t0: Referenz-Startzeit der Simulation (t=0), um das absolute Zeitraster zu erstellen.
+        time_col: Name der Spalte mit den Zeitwerten (in Minuten relativ zu t0).
+        value_col: Name der Spalte mit den zu mittelnden Werten.
+        window_min: Größe des gleitenden Fensters in Minuten. Der Mittelwert wird
+            für Datenpunkte im Intervall (t - window_min, t] berechnet.
+        step_min: Schrittweite des Ausgabe-Zeitrasters in Minuten.
 
     Returns:
-        A DataFrame with two columns: 't_min' for the time grid and
-        'mean_value' for the calculated rolling mean at each grid point.
+        Ein DataFrame mit den Spalten 't_min' (Zeit-Raster) und 'mean_value'
+        (berechneter gleitender Mittelwert).
     """
     df = df_data[[time_col, value_col]].dropna().sort_values(time_col)
 
@@ -131,10 +169,11 @@ def build_queue_timeseries_rolling(
     window_min: int = 15,
     step_min: int = 1,
 ) -> pd.DataFrame:
-    
-    # Rolling mean der Queue-Länge über (t-window, t] auf Zeitraster (step_min).
-    # df_ts: enthält t_min und q_*
-    
+    """
+    Berechnet die gleitende mittlere Warteschlangenlänge.
+
+    Nutzt `_build_rolling_mean_timeseries`, um die mittlere Länge einer Warteschlange (`q_*`) zu berechnen.
+    """
     grid = _build_rolling_mean_timeseries(
         df_data=df_ts,
         t0=t0,
@@ -146,12 +185,25 @@ def build_queue_timeseries_rolling(
     return grid.rename(columns={"mean_value": "mean_q"})
 
 
+# =========================================================
+# Plotting-Funktionen
+# =========================================================
+
 def plot_queue_over_time_rolling(
     list_of_ts_data: list,
     t0: pd.Timestamp,
     window_min: int = 15,
     y_max: Optional[float] = None,
 ):
+    """
+    Plottet eine oder mehrere Zeitreihen von Warteschlangenlängen.
+
+    Args:
+        list_of_ts_data: Eine Liste von Tupeln, wobei jedes Tupel (DataFrame, Label) enthält.
+        t0: Startzeitpunkt der Simulation.
+        window_min: Fenstergröße für die Darstellung (nur im Titel verwendet).
+        y_max: Optionaler Maximalwert für die Y-Achse.
+    """
     fig = go.Figure()
 
     for ts, label in list_of_ts_data:
@@ -187,10 +239,19 @@ def build_wait_time_timeseries_rolling(
     window_min: int = 15,
     step_min: int = 1,
 ) -> pd.DataFrame:
-    
-    # Rolling mean der Wartezeit über Passagiere, die in (t-window, t] ihren Service an der Station starten.
-    # t = arrival_min + wait_station
-    
+    """
+    Berechnet die gleitende mittlere Wartezeit an einer spezifischen Station.
+
+    Der Mittelwert wird über Passagiere gebildet, die ihren Service an der Station
+    innerhalb des gleitenden Zeitfensters (t-window, t] beginnen.
+
+    Args:
+        df_res: DataFrame mit den Passagierergebnissen.
+        t0: Startzeitpunkt der Simulation.
+        station: Name der Station (z.B. "sss", "tcn").
+        window_min: Größe des Fensters in Minuten.
+        step_min: Schrittweite des Zeitrasters in Minuten.
+    """
     wait_col = f"wait_{station}"
     serv_col = f"serv_{station}"
 
@@ -213,6 +274,44 @@ def build_wait_time_timeseries_rolling(
     )
     return grid.rename(columns={"mean_value": "mean_wait"})
 
+def build_wait_time_timeseries_by_group_rolling(
+    df_res: pd.DataFrame,
+    t0: pd.Timestamp,
+    groups: list[str],
+    window_min: int = 15,
+    step_min: int = 1,
+) -> pd.DataFrame:
+    """
+    Berechnet die gleitende mittlere Gesamtwartezeit für spezifische Passagiergruppen.
+
+    Der Mittelwert wird über Passagiere gebildet, die innerhalb des gleitenden
+    Zeitfensters (t-window, t] an der Grenzkontrolle ankommen.
+
+    Args:
+        df_res: DataFrame mit den Passagierergebnissen.
+        t0: Startzeitpunkt der Simulation.
+        groups: Eine Liste von Passagiergruppen (z.B. ["TCN_V", "TCN_AT"]).
+        window_min: Größe des Fensters in Minuten.
+        step_min: Schrittweite des Zeitrasters in Minuten.
+    """
+    df_filtered = df_res[df_res["group"].isin(groups)].copy()
+    
+    if df_filtered.empty:
+        # Pass an empty dataframe to the helper to get a zero-filled grid
+        df_prepared = pd.DataFrame(columns=["arrival_min", "wait_total"])
+    else:
+        # wait_total is already calculated in the main script
+        df_prepared = df_filtered
+
+    grid = _build_rolling_mean_timeseries(
+        df_data=df_prepared,
+        t0=t0,
+        time_col="arrival_min",
+        value_col="wait_total",
+        window_min=window_min,
+        step_min=step_min,
+    )
+    return grid.rename(columns={"mean_value": "mean_wait"})
 
 def plot_mean_wait_over_time_rolling(
     list_of_ts_data: list,
@@ -220,11 +319,24 @@ def plot_mean_wait_over_time_rolling(
     window_min: int = 15,
     y_max: Optional[float] = None,
     cfg: Optional["SimConfig"] = None,
+    secondary_axis_type: Optional[str] = None,
 ):
-    # Check if TCN is in the subset to decide if we need a secondary axis
-    has_tcn_secondary_axis = cfg is not None
+    """
+    Plottet eine oder mehrere Zeitreihen von mittleren Wartezeiten.
 
-    if has_tcn_secondary_axis:
+    Kann optional eine zweite Y-Achse für die verfügbare Kapazität (TCN oder EU) anzeigen.
+
+    Args:
+        list_of_ts_data: Liste von (DataFrame, Label)-Tupeln.
+        t0: Startzeitpunkt der Simulation.
+        y_max: Optionaler Maximalwert für die primäre Y-Achse.
+        cfg: Die `SimConfig` des Laufs, wird für die Kapazitätsachse benötigt.
+        secondary_axis_type: "TCN" oder "EU", um die entsprechende Kapazität anzuzeigen.
+    """
+    # Check if we need a secondary axis
+    has_secondary_axis = cfg is not None and secondary_axis_type is not None
+
+    if has_secondary_axis:
         fig = make_subplots(specs=[[{"secondary_y": True}]])
     else:
         fig = go.Figure()
@@ -238,37 +350,53 @@ def plot_mean_wait_over_time_rolling(
 
         x = _to_time_axis(t0, ts["t_min"])
         trace = go.Scatter(x=x, y=ts["mean_wait"], mode="lines", name=label, line=dict(color=STATION_COLORS.get(label, "black"), width=2.5))
-        if has_tcn_secondary_axis:
+        if has_secondary_axis:
             fig.add_trace(trace, secondary_y=False)
         else:
             fig.add_trace(trace)
 
-    # Add the secondary axis for TCN usage
-    if has_tcn_secondary_axis:
-        schedule = cfg.cap_tcn_schedule
+    # Add the secondary axis for TCN or EU usage
+    if has_secondary_axis:
+        if secondary_axis_type == 'TCN':
+            schedule = cfg.cap_tcn_schedule
+            axis_label = "Verfügbare TCN-Schalter"
+        elif secondary_axis_type == 'EU':
+            schedule = cfg.cap_eu_schedule
+            axis_label = "Verfügbare EU-Schalter"
+        else:
+            schedule = {}
+            axis_label = ""
+        
         x_points = []
         y_points = []
         
         day_start = t0.normalize()
 
         points = []
-        for key, cap in schedule.items():
-            start_h = int(key.split('-')[0])
-            points.append((start_h, cap))
-        points.sort()
+        if schedule:
+            for key, cap in schedule.items():
+                start_str, _ = key.split('-')
+                if ':' in start_str:
+                    start_h, start_m = map(int, start_str.split(':'))
+                else:
+                    start_h = int(start_str)
+                    start_m = 0
+                points.append((pd.Timedelta(hours=start_h, minutes=start_m), cap))
+            points.sort()
 
-        for start_h, cap in points:
-            x_points.append(day_start + pd.Timedelta(hours=start_h))
-            y_points.append(cap)
-        
-        x_points.append(day_start + pd.Timedelta(hours=24))
-        y_points.append(y_points[-1])
+            for time_delta, cap in points:
+                x_points.append(day_start + time_delta)
+                y_points.append(cap)
+            
+            if x_points:
+                x_points.append(day_start + pd.Timedelta(hours=24))
+                y_points.append(y_points[-1])
 
         fig.add_trace(
             go.Scatter(
                 x=x_points,
                 y=y_points,
-                name="Verfügbare TCN-Schalter",
+                name=axis_label,
                 mode='lines',
                 line=dict(color='grey', dash='dot', shape='hv', width=2.5),
             ),
@@ -287,16 +415,21 @@ def plot_mean_wait_over_time_rolling(
         ),
     )
     # Set y-axis titles
-    if has_tcn_secondary_axis:
+    if has_secondary_axis:
         # Manuelle Skalierung der Achsen, um das 10:1-Verhältnis zu gewährleisten und sicherzustellen, dass alle Daten sichtbar sind.
 
         max_wait = y_max if y_max is not None else max_wait_from_data
         
-        max_cap = max(cfg.cap_tcn_schedule.values()) if cfg and cfg.cap_tcn_schedule else 6
+        if secondary_axis_type == 'TCN':
+            max_cap = max(cfg.cap_tcn_schedule.values()) if cfg and cfg.cap_tcn_schedule else 6
+        elif secondary_axis_type == 'EU':
+            max_cap = max(cfg.cap_eu_schedule.values()) if cfg and cfg.cap_eu_schedule else 4
+        else:
+            max_cap = 1
 
         # 2. Erforderliche obere Grenzen für die Achsen berechnen
         y1_max_required = max_wait * 1.1  # 10% Puffer für die Wartezeit-Achse
-        y2_max_desired = max_cap + 1      # Puffer für die Kapazitäts-Achse (max. 7)
+        y2_max_desired = max_cap + 1      # Puffer für die Kapazitäts-Achse
 
         # 3. Prüfen, ob die gewünschte Kapazitäts-Achse ausreicht, um die Wartezeit im 10:1-Verhältnis darzustellen
         if y1_max_required <= y2_max_desired * 10:
@@ -323,6 +456,114 @@ def plot_mean_wait_over_time_rolling(
     st.plotly_chart(fig, use_container_width=True)
 
 
+def _get_queue_heatmap_traces(
+    df_ts: pd.DataFrame,
+    t0: pd.Timestamp,
+    show_sss: bool = True,
+    bin_min: int = 60,
+    t_start_fixed: pd.Timestamp = None,
+    t_end_fixed: pd.Timestamp = None,
+):
+    """
+    Bereitet die Daten für die Heatmap der Warteschlangenlänge vor.
+
+    Aggregiert die maximale Warteschlangenlänge pro Zeitintervall (`bin_min`)
+    für jede relevante Station.
+
+    Args:
+        df_ts: DataFrame mit den Zeitreihendaten der Warteschlangen.
+        t0: Startzeitpunkt der Simulation.
+        show_sss: Ob die SSS-Station berücksichtigt werden soll.
+        bin_min: Breite der Zeitintervalle in Minuten.
+        t_start_fixed, t_end_fixed: Fester Zeitbereich für die X-Achse.
+    """
+    if df_ts.empty:
+        return [], []
+
+    stations_map = {"TCN": "q_tcn", "EU": "q_eu", "Easypass": "q_easypass"}
+    if show_sss:
+        stations_map["SSS (Kiosk)"] = "q_sss"
+
+    min_rel_start = (t_start_fixed - t0).total_seconds() / 60.0
+    min_rel_end = (t_end_fixed - t0).total_seconds() / 60.0
+    start_bin = int((min_rel_start // bin_min) * bin_min)
+    end_bin = int((min_rel_end // bin_min) * bin_min)
+    full_idx = range(start_bin, end_bin, bin_min)
+    
+    z_data = {}
+    df_ts_binned = df_ts.copy()
+    df_ts_binned["t_bin"] = (df_ts_binned["t_min"] // bin_min).astype(int) * bin_min
+    
+    for label, col_q in stations_map.items():
+        if col_q not in df_ts_binned.columns:
+            z_data[label] = pd.Series(0, index=full_idx)
+            continue
+        grouped = df_ts_binned.groupby("t_bin")[col_q].max()
+        z_data[label] = grouped.reindex(full_idx, fill_value=0)
+    
+    x = _to_time_axis(t0, pd.Series(full_idx))
+    ordered_keys = ["Easypass", "EU", "TCN"]
+    if show_sss:
+        ordered_keys.append("SSS (Kiosk)")
+        
+    z = [z_data[k].values for k in ordered_keys]
+    text_z = [[f'{int(val)}' if val > 0 else '' for val in row] for row in z]
+    zmax_val = 150.0
+    heatmap_colorscale = get_queue_heatmap_colorscale(zmax_val)
+    
+    heatmap_trace = go.Heatmap(
+        z=z, x=x, y=ordered_keys, text=text_z, texttemplate="%{text}", textfont={"size": 14},
+        colorscale=heatmap_colorscale, ygap=3, zmin=0, zmax=zmax_val,
+        showscale=False,
+        hovertemplate="<b>%{y}</b><br>Zeitfenster ab: %{x}<br>Max. Warteschlange: %{z:.0f} Pax<extra></extra>"
+    )
+    return [heatmap_trace], ordered_keys
+
+
+def plot_queue_heatmap(
+    df_ts: pd.DataFrame,
+    t0: pd.Timestamp,
+    terminal: str,
+    cfg: "SimConfig",
+    bin_minutes: int = 60,
+):
+    """
+    Plottet eine Heatmap der maximalen Warteschlangenlänge pro Stunde.
+
+    Args:
+        df_ts: DataFrame mit den Zeitreihendaten der Warteschlangen.
+        t0: Startzeitpunkt der Simulation.
+        terminal: Name des Terminals (für Titel).
+        cfg: Die `SimConfig` des Laufs.
+    """
+    day_start = t0.normalize()
+    t_start_fixed = day_start + pd.Timedelta(hours=6)
+    t_end_fixed = day_start + pd.Timedelta(hours=24)
+
+    fig = go.Figure()
+
+    heatmap_traces, heatmap_y_labels = _get_queue_heatmap_traces(
+        df_ts, t0, cfg.sss_enabled, bin_minutes, t_start_fixed, t_end_fixed
+    )
+
+    if heatmap_traces:
+        for trace in heatmap_traces:
+            fig.add_trace(trace)
+        fig.update_yaxes(tickvals=heatmap_y_labels, ticktext=heatmap_y_labels)
+    else:
+        fig.add_annotation(
+            text="Keine Daten für Heatmap vorhanden.",
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False, font=dict(size=16, color="gray"),
+        )
+
+    fig.update_layout(
+        xaxis=dict(range=[t_start_fixed, t_end_fixed]),
+        yaxis_title="Prozessstelle",
+        height=175,
+        margin=dict(l=0, r=0, t=10, b=0)
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
 def _get_wait_heatmap_traces(
     df_res: pd.DataFrame,
     t0: pd.Timestamp,
@@ -331,6 +572,19 @@ def _get_wait_heatmap_traces(
     t_start_fixed: pd.Timestamp = None,
     t_end_fixed: pd.Timestamp = None,
 ):
+    """
+    Bereitet die Daten für die Heatmap der P95-Wartezeit vor.
+
+    Aggregiert die 95%-Perzentil-Wartezeit pro Zeitintervall (`bin_min`)
+    für jede relevante Station, basierend auf der Ankunftszeit der Passagiere.
+
+    Args:
+        df_res: DataFrame mit den Passagierergebnissen.
+        t0: Startzeitpunkt der Simulation.
+        show_sss: Ob die SSS-Station berücksichtigt werden soll.
+        bin_min: Breite der Zeitintervalle in Minuten.
+        t_start_fixed, t_end_fixed: Fester Zeitbereich für die X-Achse.
+    """
     if df_res.empty:
         return [], []
 
@@ -396,40 +650,43 @@ def _get_wait_heatmap_traces(
         colorscale=heatmap_colorscale,
         ygap=3,
         zmin=0, zmax=zmax_val,
-        colorbar=dict(
-            title=dict(
-                text="P95 Min",
-                font=dict(size=14)
-            ),
-            tickvals=[5, 15, 25, 37.5, 52.5], # Midpoints for labels
-            ticktext=['&le; 10', '11-20', '21-30', '31-45', '&gt; 45'],
-            tickfont=dict(size=12)
-        ),
+        showscale=False,
         hovertemplate="<b>%{y}</b><br>Ankunft ab: %{x}<br>P95 Wartezeit: %{z:.1f} min<extra></extra>"
     )
     return [heatmap_trace], ordered_keys # Return traces and y-labels
 
 
-def plot_pax_arrival_stacked_bar(df_res: pd.DataFrame, t0: pd.Timestamp, bin_minutes: int = 15): # This function is still used for the overall terminal overview
+def plot_pax_arrival_stacked_bar(df_res: pd.DataFrame, t0: pd.Timestamp, bin_minutes: int = 15):
+    """Plottet das Passagieraufkommen als gestapeltes Balkendiagramm.
+
+    Args:
+        df_res: DataFrame mit den Passagierergebnissen.
+        t0: Startzeitpunkt der Simulation.
+        bin_minutes: Breite der Zeitintervalle in Minuten.
     """
-    Zeigt das Passagieraufkommen pro Terminal als gestapeltes Balkendiagramm.
-    """
+    # Define fixed time range first, as it's needed even for empty data
+    day_start = t0.normalize()
+    t_start_fixed = day_start + pd.Timedelta(hours=6)
+    t_end_fixed = day_start + pd.Timedelta(hours=23)
+
     if df_res.empty:
-        st.info("Keine Passagierdaten für das Aufkommensdiagramm vorhanden.")
-        return
+        # Create an empty dataframe to show an empty plot with the correct range
+        pax_by_terminal_time = pd.DataFrame()
+    else:
+        # 1. Data prep
+        df_res_copy = df_res.copy() # Avoid SettingWithCopyWarning
+        df_res_copy['arrival_bin'] = (df_res_copy['arrival_min'] // bin_minutes) * bin_minutes
+        pax_by_terminal_time = df_res_copy.groupby(['arrival_bin', 'terminal']).size().unstack(fill_value=0)
 
-    # 1. Data prep
-    df_res['arrival_bin'] = (df_res['arrival_min'] // bin_minutes) * bin_minutes
-    pax_by_terminal_time = df_res.groupby(['arrival_bin', 'terminal']).size().unstack(fill_value=0)
-
-    # Ensure all bins are present
-    if pax_by_terminal_time.empty:
-        st.info("Keine Passagierdaten für das Aufkommensdiagramm vorhanden.")
-        return
-        
-    min_bin = pax_by_terminal_time.index.min()
-    max_bin = pax_by_terminal_time.index.max()
-    full_range = pd.RangeIndex(start=int(min_bin), stop=int(max_bin) + bin_minutes, step=bin_minutes)
+    # Ensure all bins within the fixed range are present
+    min_rel_start = (t_start_fixed - t0).total_seconds() / 60.0
+    min_rel_end = (t_end_fixed - t0).total_seconds() / 60.0
+    start_bin = int(min_rel_start // bin_minutes) * bin_minutes
+    end_bin = int(min_rel_end // bin_minutes) * bin_minutes
+    
+    full_range = pd.RangeIndex(start=start_bin, stop=end_bin + bin_minutes, step=bin_minutes)
+    
+    # Reindex to the full fixed range
     pax_by_terminal_time = pax_by_terminal_time.reindex(full_range, fill_value=0)
 
     # Convert bin to timestamp for plotting
@@ -437,117 +694,43 @@ def plot_pax_arrival_stacked_bar(df_res: pd.DataFrame, t0: pd.Timestamp, bin_min
 
     # 2. Plotting
     fig = go.Figure()
-
-    for term in ["T1", "T2"]:
-        if term in pax_by_terminal_time.columns:
-            fig.add_trace(go.Bar(
-                x=time_bins,
-                y=pax_by_terminal_time[term],
-                name=f'Terminal {term.strip("T")}',
-                marker_color=TERMINAL_COLORS.get(term)
-            ))
-
+    terminals_in_data = [c for c in ["T1", "T2"] if c in pax_by_terminal_time.columns]
+    for term in terminals_in_data:
+        fig.add_trace(go.Bar(x=time_bins, y=pax_by_terminal_time[term], name=f'Terminal {term.strip("T")}', marker_color=TERMINAL_COLORS.get(term)))
     fig.update_layout(
         barmode='stack',
-        title=f"Passagieraufkommen pro Terminal ({bin_minutes}-Minuten-Intervalle)",
-        xaxis_title="Ankunftszeit an der Grenzkontrolle",
+        xaxis_title=None,
         yaxis_title="Anzahl Passagiere",
-        legend_title_text="Terminal",
-        hovermode="x unified"
+        hovermode="x unified",
+        xaxis=dict(range=[t_start_fixed, t_end_fixed]),
+        showlegend=False,
+        margin=dict(l=0, r=0, t=10, b=0)
     )
     st.plotly_chart(fig, use_container_width=True)
 
 
-def _get_pax_arrival_by_flight_stacked_bar_traces( # Renamed to helper function
-    df_res: pd.DataFrame,
-    t0: pd.Timestamp,
-    terminal: str,
-    bin_minutes: int = 60,
-    t_start_fixed: pd.Timestamp = None, # Added fixed time range parameters
-    t_end_fixed: pd.Timestamp = None,   # Added fixed time range parameters
-):
-    """
-    Zeigt das Passagieraufkommen pro Flug als gestapeltes Balkendiagramm für ein bestimmtes Terminal.
-    """
-    df_terminal = df_res[df_res['terminal'] == terminal].copy()
-
-    if df_terminal.empty:
-        return [] # Return empty list of traces
-
-    df_terminal['arrival_bin'] = (df_terminal['arrival_min'] // bin_minutes) * bin_minutes
-    pax_by_fln_time = df_terminal.groupby(['arrival_bin', 'fln']).size().unstack(fill_value=0)
-
-    if pax_by_fln_time.empty:
-        return [] # Return empty list of traces
-    
-    min_rel_start = (t_start_fixed - t0).total_seconds() / 60.0
-    min_rel_end = (t_end_fixed - t0).total_seconds() / 60.0
-    
-    start_bin = int(min_rel_start // bin_minutes) * bin_minutes
-    end_bin = int(min_rel_end // bin_minutes) * bin_minutes
-    
-    full_range = pd.RangeIndex(start=start_bin, stop=end_bin + bin_minutes, step=bin_minutes)
-    pax_by_fln_time = pax_by_fln_time.reindex(full_range, fill_value=0)
-
-    # Ersetze 0 durch None, damit im Tooltip nur Werte > 0 erscheinen
-    pax_by_fln_time.replace(0, None, inplace=True)
-
-    time_bins = _to_time_axis(t0, pax_by_fln_time.index)
-
-    fig = go.Figure()
-    # Flüge nach Gesamtpassagierzahl sortieren für eine geordnete Legende
-    flight_order = pax_by_fln_time.sum().sort_values(ascending=False).index
-
-    bar_traces = [] # Collect traces
-    for fln in flight_order:
-        bar_traces.append(go.Bar(
-            x=time_bins,
-            y=pax_by_fln_time[fln],
-            name=fln,
-            showlegend=True, # Ensure legend is shown for each flight
-            hovertemplate="<b>%{x|%H:%M}</b><br>Flug: %{customdata}<br>Passagiere: %{y}<extra></extra>", # Custom hover template
-            customdata=[fln] * len(time_bins) # Add customdata for hover
-        ))
-    return bar_traces # Return list of traces
-
-
-def plot_terminal_overview_combined( # New combined plotting function
+def plot_terminal_overview_combined(
     df_res: pd.DataFrame,
     t0: pd.Timestamp,
     terminal: str,
     cfg: "SimConfig",
-    bin_minutes_bar: int = 60,
     bin_minutes_heatmap: int = 60,
 ):
+    """
+    Plottet die Heatmap der P95-Wartezeit für ein Terminal.
+
+    Args:
+        df_res: DataFrame mit den Passagierergebnissen.
+        t0: Startzeitpunkt der Simulation.
+        terminal: Name des Terminals.
+        cfg: Die `SimConfig` des Laufs.
+    """
     # Define fixed time range for consistent x-axis across all plots
     day_start = t0.normalize()
     t_start_fixed = day_start + pd.Timedelta(hours=6)
     t_end_fixed = day_start + pd.Timedelta(hours=24)
 
-    fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.05 # Adjust spacing between subplots
-    )
-
-    # Add stacked bar chart traces
-    bar_traces = _get_pax_arrival_by_flight_stacked_bar_traces(
-        df_res, t0, terminal, bin_minutes_bar, t_start_fixed, t_end_fixed
-    )
-    if bar_traces:
-        for trace in bar_traces:
-            fig.add_trace(trace, row=1, col=1)
-    else:
-        # Add a placeholder if no data for bar chart
-        fig.add_annotation(
-            text="Keine Passagierdaten für das Aufkommensdiagramm vorhanden.",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5,
-            showarrow=False,
-            font=dict(size=16, color="gray"),
-            row=1, col=1
-        )
+    fig = go.Figure()
 
     # Add heatmap traces
     heatmap_traces, heatmap_y_labels = _get_wait_heatmap_traces(
@@ -555,8 +738,8 @@ def plot_terminal_overview_combined( # New combined plotting function
     )
     if heatmap_traces:
         for trace in heatmap_traces:
-            fig.add_trace(trace, row=2, col=1)
-        fig.update_yaxes(tickvals=heatmap_y_labels, ticktext=heatmap_y_labels, row=2, col=1) # Ensure y-labels are correct
+            fig.add_trace(trace)
+        fig.update_yaxes(tickvals=heatmap_y_labels, ticktext=heatmap_y_labels)
     else:
         # Add a placeholder if no data for heatmap
         fig.add_annotation(
@@ -565,32 +748,15 @@ def plot_terminal_overview_combined( # New combined plotting function
             x=0.5, y=0.5,
             showarrow=False,
             font=dict(size=16, color="gray"),
-            row=2, col=1
         )
 
     # Update layout for combined figure
     fig.update_layout(
-        barmode='stack',
-        title_text=f"Terminal {terminal.strip('T')}: Passagieraufkommen pro Flug & P95 Wartezeit",
         hovermode="x unified",
-        height=750, # Total height for the combined plot
-        xaxis=dict(range=[t_start_fixed, t_end_fixed]), # Fixed x-axis range for top plot
-        xaxis2=dict(rangeslider_visible=False, range=[t_start_fixed, t_end_fixed]), # Fixed x-axis range and rangeslider for bottom plot
-        legend_title_text="Flugnummer",
-        margin=dict(l=0, r=0, t=60, b=0) # Adjust margins for overall figure
+        height=175,
+        xaxis=dict(range=[t_start_fixed, t_end_fixed]),
+        margin=dict(l=0, r=0, t=10, b=0)
     )
     
-    # After layout is defined, we can get the domain of the second y-axis
-    # The domain is calculated by make_subplots and is available in the layout object.
-    # We need to update the colorbar of the heatmap trace to align with its subplot.
-    if heatmap_traces:
-        yaxis2_domain = fig.layout.yaxis2.domain
-        fig.update_traces(
-            selector=dict(type='heatmap'),
-            colorbar_y=yaxis2_domain[0],
-            colorbar_len=yaxis2_domain[1] - yaxis2_domain[0]
-        )
-    
-    fig.update_yaxes(title_text="Anzahl Passagiere", row=1, col=1)
-    fig.update_yaxes(title_text="Prozessstelle", row=2, col=1)
+    fig.update_yaxes(title_text="Prozessstelle")
     st.plotly_chart(fig, use_container_width=True)

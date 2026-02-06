@@ -1,7 +1,9 @@
-"""Standard-Mapping für Typ4 -> Standard-EPAX-Werte.
+"""
+Standard-Passagierzahlen (EPAX) pro Flugzeugtyp (Typ4).
 
-Hier können die Standard-Pax-Zahlen pro Typ4 gepflegt werden.
-Fehlt ein Typ, wird in der Anwendung ein Fallback-Wert von 100 verwendet.
+Dieses Modul enthält ein Dictionary, das als Fallback dient, um die
+erwartete Passagieranzahl für einen Flug zu bestimmen, wenn keine
+expliziten APAX- oder EPAX-Werte im Flugplan vorhanden sind.
 """
 
 DEFAULT_EPAX_BY_TYP4 = {
