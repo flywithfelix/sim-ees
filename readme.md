@@ -35,11 +35,11 @@ Eine Streamlit-basierte, diskrete Ereignissimulation zur Analyse und Visualisier
 
     **requirements.txt**:
     ```
-    streamlit
-    pandas
-    simpy
-    plotly
-    openpyxl
+    simpy>=4.0,<5.0
+    pandas>=1.5,<3.0
+    streamlit>=1.25,<2.0
+    plotly>=5.15,<6.0
+    openpyxl>=3.1,<4.0
     ```
 
     ```bash
