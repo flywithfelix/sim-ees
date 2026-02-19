@@ -110,6 +110,11 @@ def _build_rolling_mean_timeseries(
     berechnen. Die Berechnung erfolgt auf einem festen Zeitraster von 06:00 bis 24:00 Uhr
     am Tag des Simulationsstarts (t0).
 
+    Hinweis: Diese manuelle Implementierung wird anstelle einer direkten
+    `pandas.DataFrame.rolling`-Operation verwendet, da der Mittelwert nicht für jeden
+    Datenpunkt, sondern auf einem separaten, festen Zeitraster (`grid`) ausgewertet
+    werden soll. Der Zwei-Zeiger-Ansatz ist hierfür mit einer Komplexität von O(N+M) sehr effizient.
+
     Args:
         df_data: DataFrame mit den Zeit- und Wertedaten.
         t0: Referenz-Startzeit der Simulation (t=0), um das absolute Zeitraster zu erstellen.
