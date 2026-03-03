@@ -29,6 +29,9 @@ STATION_COLORS = {
     "TCN": "#94C11C",          # Grün
 }
 
+SERVICE_LEVEL_COLOR = "#d62728"  # Rot
+CAPACITY_BAR_COLOR = "#a8a9ac"      # Grau
+
 TERMINAL_COLORS = {
     "T1": "#9D9D9D", 
     "T2": "#00A8A1"
@@ -283,11 +286,12 @@ def build_wait_time_timeseries_by_group_rolling(
     df_res: pd.DataFrame,
     t0: pd.Timestamp,
     groups: list[str],
+    value_col: str,
     window_min: int = 15,
     step_min: int = 1,
 ) -> pd.DataFrame:
     """
-    Berechnet die gleitende mittlere Gesamtwartezeit für spezifische Passagiergruppen.
+    Berechnet die gleitende mittlere Wartezeit für spezifische Passagiergruppen.
 
     Der Mittelwert wird über Passagiere gebildet, die innerhalb des gleitenden
     Zeitfensters (t-window, t] an der Grenzkontrolle ankommen.
@@ -296,6 +300,7 @@ def build_wait_time_timeseries_by_group_rolling(
         df_res: DataFrame mit den Passagierergebnissen.
         t0: Startzeitpunkt der Simulation.
         groups: Eine Liste von Passagiergruppen (z.B. ["TCN_V", "TCN_AT"]).
+        value_col: Die zu mittelnde Spalte (z.B. "wait_total", "wait_tcn").
         window_min: Größe des Fensters in Minuten.
         step_min: Schrittweite des Zeitrasters in Minuten.
     """
@@ -303,16 +308,15 @@ def build_wait_time_timeseries_by_group_rolling(
     
     if df_filtered.empty:
         # Pass an empty dataframe to the helper to get a zero-filled grid
-        df_prepared = pd.DataFrame(columns=["arrival_min", "wait_total"])
+        df_prepared = pd.DataFrame(columns=["arrival_min", value_col])
     else:
-        # wait_total is already calculated in the main script
         df_prepared = df_filtered
 
     grid = _build_rolling_mean_timeseries(
         df_data=df_prepared,
         t0=t0,
         time_col="arrival_min",
-        value_col="wait_total",
+        value_col=value_col,
         window_min=window_min,
         step_min=step_min,
     )
@@ -346,39 +350,24 @@ def plot_mean_wait_over_time_rolling(
     else:
         fig = go.Figure()
 
-    max_wait_from_data = 0
-    for ts, label in list_of_ts_data:
-        if ts.empty:
-            continue
-        if not ts['mean_wait'].empty:
-            max_wait_from_data = max(max_wait_from_data, ts['mean_wait'].max())
+    
 
-        x = _to_time_axis(t0, ts["t_min"])
-        trace = go.Scatter(x=x, y=ts["mean_wait"], mode="lines", name=label, line=dict(color=STATION_COLORS.get(label, "black"), width=2.5))
-        if has_secondary_axis:
-            fig.add_trace(trace, secondary_y=False)
-        else:
-            fig.add_trace(trace)
-
-    # Add the secondary axis for TCN or EU usage
+    # Die Kapazitäts-Säulen zuerst hinzufügen, damit sie im Hintergrund liegen
     if has_secondary_axis:
         if secondary_axis_type == 'TCN':
             schedule = cfg.cap_tcn_schedule
-            axis_label = "Verfügbare TCN-Schalter"
+            axis_label = "geöffnete TCN-Schalter"
         elif secondary_axis_type == 'EU':
             schedule = cfg.cap_eu_schedule
-            axis_label = "Verfügbare EU-Schalter"
+            axis_label = "geöffnete EU-Schalter"
         else:
             schedule = {}
             axis_label = ""
-        
-        x_points = []
-        y_points = []
-        
+
         day_start = t0.normalize()
 
-        points = []
         if schedule:
+            points = []
             for key, cap in schedule.items():
                 start_str, _ = key.split('-')
                 if ':' in start_str:
@@ -389,24 +378,54 @@ def plot_mean_wait_over_time_rolling(
                 points.append((pd.Timedelta(hours=start_h, minutes=start_m), cap))
             points.sort()
 
-            for time_delta, cap in points:
-                x_points.append(day_start + time_delta)
-                y_points.append(cap)
-            
-            if x_points:
-                x_points.append(day_start + pd.Timedelta(hours=24))
-                y_points.append(y_points[-1])
+            interval_duration_min = 15  # Annahme: 15-Minuten-Intervalle
+            center_offset = pd.Timedelta(minutes=interval_duration_min / 2)
+            bar_width_ms = (interval_duration_min * 60 * 1000) * 0.9 # 90% der Intervallbreite für eine Lücke
 
-        fig.add_trace(
-            go.Scatter(
-                x=x_points,
-                y=y_points,
-                name=axis_label,
-                mode='lines',
-                line=dict(color='grey', dash='dot', shape='hv', width=2.5),
-            ),
-            secondary_y=True,
+            bar_centers = [day_start + time_delta + center_offset for time_delta, _ in points]
+            bar_caps = [cap for _, cap in points]
+
+            fig.add_trace(
+                go.Bar(
+                    x=bar_centers,
+                    y=bar_caps,
+                    name=axis_label,
+                    width=bar_width_ms,
+                    marker=dict(color=CAPACITY_BAR_COLOR),
+                    opacity=0.3,
+                    hoverinfo='skip',
+                ),
+                secondary_y=True,
+            )
+
+    max_wait_from_data = 0
+    for ts, label in list_of_ts_data:
+        if ts.empty:
+            continue
+        if not ts['mean_wait'].empty:
+            max_wait_from_data = max(max_wait_from_data, ts['mean_wait'].max())
+
+        x = _to_time_axis(t0, ts["t_min"])
+        trace = go.Scatter(x=x, y=ts["mean_wait"], mode="lines", name=label, opacity=1.0, line=dict(color=STATION_COLORS.get(label, "black"), width=2.75))
+        if has_secondary_axis:
+            fig.add_trace(trace, secondary_y=False)
+        else:
+            fig.add_trace(trace)
+
+     # Service-Level-Linie hinzufügen, falls vorhanden
+    if cfg and hasattr(cfg, 'service_level_min'):
+        fig.add_hline(
+            y=cfg.service_level_min,
+            line_width=3,
+            line_dash="dash",
+            line_color=SERVICE_LEVEL_COLOR,
+            annotation_text=f"Service-Level-Ziel ({cfg.service_level_min:.0f} min)",
+            annotation_position="top right",
+            annotation_font_color=SERVICE_LEVEL_COLOR,
+            annotation_font_size=14,
+            layer="above"
         )
+
     fig.update_layout(
         xaxis_title=None,
         hovermode="x unified",
@@ -423,7 +442,11 @@ def plot_mean_wait_over_time_rolling(
     if has_secondary_axis:
         # Manuelle Skalierung der Achsen, um das 10:1-Verhältnis zu gewährleisten und sicherzustellen, dass alle Daten sichtbar sind.
 
-        max_wait = y_max if y_max is not None else max_wait_from_data
+        # Starte mit dem Maximum aus den Daten oder dem extern vorgegebenen y_max
+        max_wait_for_scaling = y_max if y_max is not None else max_wait_from_data
+        # Stelle sicher, dass die Service-Level-Linie immer sichtbar ist
+        if cfg and hasattr(cfg, 'service_level_min'):
+            max_wait_for_scaling = max(max_wait_for_scaling, cfg.service_level_min)
         
         if secondary_axis_type == 'TCN':
             max_cap = max(cfg.cap_tcn_schedule.values()) if cfg and cfg.cap_tcn_schedule else 6
@@ -432,19 +455,12 @@ def plot_mean_wait_over_time_rolling(
         else:
             max_cap = 1
 
-        # 2. Erforderliche obere Grenzen für die Achsen berechnen
-        y1_max_required = max_wait * 1.1  # 10% Puffer für die Wartezeit-Achse
-        y2_max_desired = max_cap + 1      # Puffer für die Kapazitäts-Achse
+        # Die primäre Y-Achse (Wartezeit) wird durch den globalen Maximalwert (y_max) bestimmt,
+        # um die Vergleichbarkeit zwischen den Diagrammen zu gewährleisten.
+        final_y1_range = [0, max_wait_for_scaling * 1.1]
 
-        # 3. Prüfen, ob die gewünschte Kapazitäts-Achse ausreicht, um die Wartezeit im 10:1-Verhältnis darzustellen
-        if y1_max_required <= y2_max_desired * 10:
-            # Ja, die Kapazitäts-Achse kann bei max. 7 bleiben und die Wartezeit-Achse wird entsprechend skaliert
-            final_y2_range = [0, y2_max_desired]
-            final_y1_range = [0, y2_max_desired * 10]
-        else:
-            # Nein, die Wartezeit ist zu hoch. Die Wartezeit-Achse bestimmt die Skalierung, und die Kapazitäts-Achse wird mitgezogen.
-            final_y1_range = [0, y1_max_required]
-            final_y2_range = [0, y1_max_required / 10]
+        # Die sekundäre Y-Achse (Kapazität) wird durch die maximale Kapazität des jeweiligen Plots bestimmt.
+        final_y2_range = [0, max_cap + 1]
 
         fig.update_yaxes(title_text="Ø Wartezeit [min]", secondary_y=False, range=final_y1_range)
         fig.update_yaxes(
@@ -455,8 +471,13 @@ def plot_mean_wait_over_time_rolling(
             dtick=1,
         )
     else:
-        max_wait = y_max if y_max is not None else max_wait_from_data
-        fig.update_yaxes(title_text="Ø Wartezeit [min]", range=[0, max_wait * 1.1])
+        # Starte mit dem Maximum aus den Daten oder dem extern vorgegebenen y_max
+        max_wait_for_scaling = y_max if y_max is not None else max_wait_from_data
+        # Stelle sicher, dass die Service-Level-Linie immer sichtbar ist
+        if cfg and hasattr(cfg, 'service_level_min'):
+            max_wait_for_scaling = max(max_wait_for_scaling, cfg.service_level_min)
+
+        fig.update_yaxes(title_text="Ø Wartezeit [min]", range=[0, max_wait_for_scaling * 1.1])
 
     st.plotly_chart(fig, use_container_width=True)
 
@@ -563,9 +584,9 @@ def plot_queue_heatmap(
 
     fig.update_layout(
         xaxis=dict(range=[t_start_fixed, t_end_fixed]),
-        yaxis_title="Prozessstelle",
-        height=175,
-        margin=dict(l=0, r=0, t=10, b=0)
+        height=225,
+        margin=dict(l=0, r=0, t=50, b=0),
+        font=dict(size=15, color="gray"),
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -752,16 +773,15 @@ def plot_terminal_overview_combined(
             xref="paper", yref="paper",
             x=0.5, y=0.5,
             showarrow=False,
-            font=dict(size=16, color="gray"),
+            font=dict(size=15, color="gray"),
         )
 
     # Update layout for combined figure
     fig.update_layout(
         hovermode="x unified",
-        height=175,
+        height=225,
         xaxis=dict(range=[t_start_fixed, t_end_fixed]),
-        margin=dict(l=0, r=0, t=10, b=0)
+        margin=dict(l=0, r=0, t=50, b=0)
     )
     
-    fig.update_yaxes(title_text="Prozessstelle")
     st.plotly_chart(fig, use_container_width=True)

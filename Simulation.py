@@ -9,22 +9,36 @@ Benutzer zur Auswahl von Flügen, die Orchestrierung der Simulationsläufe und
 die Darstellung der Ergebnisse in Form von Metriken, Tabellen und Diagrammen.
 """
 import pandas as pd
+from dataclasses import asdict
 import streamlit as st
+import plotly.graph_objects as go
+from typing import Any, Dict, List, cast
 
 from engine import SimConfig, run_simulation
-from passenger_data import (
-    TCN_SERVICE_LEVELS
+from parameter import (
+    TCN_SERVICE_LEVELS,
+    DEFAULT_SESSION_STATE,
+    FLIGHT_ALLOCATION
 )
 from typ4_defaults import DEFAULT_EPAX_BY_TYP4
-from flight_allocation import FLIGHT_ALLOCATION
 
 
 # =========================================================
 # Initialisierung
 # =========================================================
-from session_state_init import init_session_state
-from plotting import build_wait_time_timeseries_rolling, build_wait_time_timeseries_by_group_rolling
+from plotting import (
+    build_wait_time_timeseries_rolling,
+    build_wait_time_timeseries_by_group_rolling,
+    TERMINAL_COLORS
+)
 
+def init_session_state():
+    """
+    Initialisiert den `st.session_state` mit Standardwerten.
+    """
+    for k, v in DEFAULT_SESSION_STATE.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
 # =========================================================
 # Datenverarbeitung und Parsing
@@ -203,7 +217,7 @@ def flights_to_sim_input(df_selected: pd.DataFrame):
     # Sicherstellen, dass spax ein int und t_arr_min ein float ist, wie es die Engine erwartet
     df_sim['spax'] = df_sim['spax'].astype(int)
     df_sim['t_arr_min'] = df_sim['t_arr_min'].astype(float)
-    flights = df_sim[sim_cols].to_dict('records')
+    flights = cast(List[Dict[str, Any]], df_sim[sim_cols].to_dict('records'))
     
     return flights, t0, df2, fallback_count
 
@@ -214,6 +228,34 @@ def flights_to_sim_input(df_selected: pd.DataFrame):
 st.set_page_config(page_title="SIM EES", layout="wide", initial_sidebar_state="expanded")
 st.title("Simulation des EES-Prozesses am Flughafen")
 
+# Custom CSS für gleichhohe KPI-Kacheln
+st.markdown(
+    """
+    <style>
+    [data-testid="stMetric"] {
+        min-height: 140px;
+        border-radius: 10px;
+        }
+
+    /* Vergrößert die Radio-Buttons für die Terminal-Auswahl */
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label {
+        font-size: 1.1rem;
+        padding: 0.5rem 1rem;
+        border: 1px solid #e0e0e0;
+        border-radius: 7px;
+        margin: 0 0.25rem;
+        transition: all 0.2s;
+    }
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label:hover {
+        background-color: #f0f2f6;
+    }
+   
+    </style>
+    """,
+
+    unsafe_allow_html=True,
+)
+
 # Initialisiere Defaults (wichtig, falls User Settings noch nicht besucht hat)
 init_session_state()
 # Render settings in the sidebar (migrated from pages/2_Einstellungen.py)
@@ -221,7 +263,7 @@ from settings_sidebar import render_settings_sidebar
 render_settings_sidebar(show_sim_button=True)
 
 
-def get_schedule_breaches(df_res, t0, service_level_min, groups: list[str], window_min=15):
+def get_schedule_breaches(df_res, t0, service_level_min, groups: list[str], value_col: str, window_min=15):
     """Analysiert Wartezeiten einer Passagiergruppe und identifiziert Service-Level-Verletzungen.
 
     Args:
@@ -229,6 +271,7 @@ def get_schedule_breaches(df_res, t0, service_level_min, groups: list[str], wind
         t0: Startzeitpunkt der Simulation.
         service_level_min: Die maximale erlaubte mittlere Wartezeit in Minuten.
         groups: Liste der Passagiergruppen, die analysiert werden sollen (z.B. ["TCN_V", "TCN_AT"]).
+        value_col: Die Spalte mit der zu prüfenden Wartezeit (z.B. "wait_tcn").
         window_min: Die Fenstergröße für den gleitenden Mittelwert.
 
     Returns:
@@ -238,7 +281,7 @@ def get_schedule_breaches(df_res, t0, service_level_min, groups: list[str], wind
         return []
 
     # Berechne die rollierende mittlere Wartezeit für die angegebene Passagiergruppe.
-    ts_wait_group = build_wait_time_timeseries_by_group_rolling(df_res, t0, groups, window_min=window_min, step_min=5)
+    ts_wait_group = build_wait_time_timeseries_by_group_rolling(df_res, t0, groups, value_col, window_min=window_min, step_min=5)
 
     # Finde alle Zeitpunkte, an denen die mittlere Wartezeit den Schwellenwert überschreitet
     breached_times = ts_wait_group[ts_wait_group["mean_wait"] > service_level_min]
@@ -271,14 +314,11 @@ def render_terminal_details(terminal_id: str, df_res: pd.DataFrame, t0: pd.Times
 
     show_sss = bool(cfg.sss_enabled) if cfg else False
 
-    st.markdown("##### P95 Wartezeit pro Stunde")
-    plot_terminal_overview_combined(df_res, t0, terminal=terminal_id, cfg=cfg, bin_minutes_heatmap=60)
-
     # --- Datenaufbereitung für synchronisierte Achsen ---
     # Wartezeiten
-    ts_w_tcn = build_wait_time_timeseries_by_group_rolling(df_res_term, t0, ["TCN_V", "TCN_AT"], window_min=15, step_min=1)
-    ts_w_eu = build_wait_time_timeseries_by_group_rolling(df_res_term, t0, ["EU_MANUAL"], window_min=15, step_min=1)
-    ts_w_ep = build_wait_time_timeseries_by_group_rolling(df_res_term, t0, ["EASYPASS"], window_min=15, step_min=1)
+    ts_w_tcn = build_wait_time_timeseries_by_group_rolling(df_res_term, t0, ["TCN_V", "TCN_AT"], "wait_tcn", window_min=15, step_min=1)
+    ts_w_eu = build_wait_time_timeseries_by_group_rolling(df_res_term, t0, ["EU_MANUAL"], "wait_eu", window_min=15, step_min=1)
+    ts_w_ep = build_wait_time_timeseries_by_group_rolling(df_res_term, t0, ["EASYPASS"], "wait_easypass", window_min=15, step_min=1)
     all_waits = pd.concat([ts_w_tcn, ts_w_eu, ts_w_ep])
     max_w = all_waits['mean_wait'].max() if not all_waits.empty else 0
 
@@ -291,29 +331,36 @@ def render_terminal_details(terminal_id: str, df_res: pd.DataFrame, t0: pd.Times
     max_q = all_queues['mean_q'].max() if not all_queues.empty else 0
 
     # --- Plotting ---
+    with st.container(border=True):
+        st.markdown(f"##### {terminal_id} - Ø Wartezeit (rollierend 15 min)")
+        tab1, tab2 = st.tabs(["TCN-Gruppen", "EU/Easypass-Gruppen"])
+
+        with tab1:
+            data_w_tcn = [(ts_w_tcn, "TCN")]
+            plot_mean_wait_over_time_rolling(data_w_tcn, t0, window_min=15, y_max=max_w, cfg=cfg, secondary_axis_type='TCN')
+            # --- Plot für Warteschlangen (rollierend) - auf Wunsch ausgeblendet, kann bei Bedarf reaktiviert werden ---
+            # data_q_tcn = [(ts_q_tcn, "TCN")] + ([ (ts_q_sss, "SSS (Kiosk)") ] if show_sss else [])
+            # st.markdown("###### Warteschlangen (rollierend 15 min)")
+            # plot_queue_over_time_rolling(data_q_tcn, t0, window_min=15, y_max=max_q)
+        
+        with tab2:
+            data_w_eu = [(ts_w_eu, "EU"), (ts_w_ep, "Easypass")]
+            plot_mean_wait_over_time_rolling(data_w_eu, t0, window_min=15, y_max=max_w, cfg=cfg, secondary_axis_type='EU')
+            # --- Plot für Warteschlangen (rollierend) - auf Wunsch ausgeblendet, kann bei Bedarf reaktiviert werden ---
+            # data_q_eu = [(ts_q_eu, "EU"), (ts_q_ep, "Easypass")]
+            # st.markdown("###### Warteschlangen (rollierend 15 min)")
+            # plot_queue_over_time_rolling(data_q_eu, t0, window_min=15, y_max=max_q)
+
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("##### TCN-Gruppe")
-        data_w_tcn = [(ts_w_tcn, "TCN")]
-        st.markdown("###### Ø Wartezeit (rollierend 15 min)")
-        plot_mean_wait_over_time_rolling(data_w_tcn, t0, window_min=15, y_max=max_w, cfg=cfg, secondary_axis_type='TCN')
-        data_q_tcn = [(ts_q_tcn, "TCN")] + ([ (ts_q_sss, "SSS (Kiosk)") ] if show_sss else [])
-        st.markdown("###### Warteschlangen (rollierend 15 min)")
-        plot_queue_over_time_rolling(data_q_tcn, t0, window_min=15, y_max=max_q)
+        with st.container(border=True):
+            st.markdown(f"##### {terminal_id} - P95 Wartezeit/h")
+            plot_terminal_overview_combined(df_res, t0, terminal=terminal_id, cfg=cfg, bin_minutes_heatmap=60)
     with col2:
-        st.markdown("##### EU/Easypass-Gruppen")
-        data_w_eu = [(ts_w_eu, "EU"), (ts_w_ep, "Easypass")]
-        st.markdown("###### Ø Wartezeit (rollierend 15 min)")
-        plot_mean_wait_over_time_rolling(data_w_eu, t0, window_min=15, y_max=max_w, cfg=cfg, secondary_axis_type='EU')
-        data_q_eu = [(ts_q_eu, "EU"), (ts_q_ep, "Easypass")]
-        st.markdown("###### Warteschlangen (rollierend 15 min)")
-        plot_queue_over_time_rolling(data_q_eu, t0, window_min=15, y_max=max_q)
-
-    st.markdown("##### Maximale Warteschlangenlänge pro Stunde")
-    plot_queue_heatmap(df_ts, t0, terminal=terminal_id, cfg=cfg, bin_minutes=60)
-
-    st.markdown("##### Passagieraufkommen (15 min Intervalle)")
-    plot_pax_arrival_stacked_bar(df_res_term, t0, bin_minutes=15)
+        with st.container(border=True):
+            st.markdown(f"##### {terminal_id} - Anzahl Personen in Wartschlange/h")
+            plot_queue_heatmap(df_ts, t0, terminal=terminal_id, cfg=cfg, bin_minutes=60)
+    
 # Ensure Einstellungen page reloads saved settings when arriving from Home
 st.session_state["_settings_loaded"] = False
 
@@ -372,75 +419,82 @@ if not fln_all:
 # =========================================================
 # Hauptsteuerelemente (Flugauswahl)
 # =========================================================
-st.subheader("Flüge für Simulation auswählen")
+with st.expander("✈️ Flüge für Simulation auswählen", expanded=True):
+    # Warnen, wenn für einige Zeilen weder APAX noch EPAX vorhanden waren und Default verwendet wurde
+    if "APAX" in df_all.columns:
+        fallback_mask_all = df_all["APAX"].isna() & df_all["EPAX"].isna()
+    else:
+        fallback_mask_all = df_all["EPAX"].isna()
+    fallback_count_all = int(fallback_mask_all.sum())
 
-# Warnen, wenn für einige Zeilen weder APAX noch EPAX vorhanden waren und Default verwendet wurde
-if "APAX" in df_all.columns:
-    fallback_mask_all = df_all["APAX"].isna() & df_all["EPAX"].isna()
-else:
-    fallback_mask_all = df_all["EPAX"].isna()
-fallback_count_all = int(fallback_mask_all.sum())
+    if fallback_count_all > 0:
+        st.warning(f"{fallback_count_all} Flüge ohne APAX/EPAX — Standardwert für Passagierzahl wird verwendet.")
 
-if fallback_count_all > 0:
-    st.warning(f"{fallback_count_all} Flüge ohne APAX/EPAX — Standardwert für Passagierzahl wird verwendet.")
+    # Prepare dataframe for editor. Add a 'select' column.
+    # Reset if the underlying file has changed (by checking if 'edited_df' is missing).
+    if "edited_df" not in st.session_state:
+        df_editable = df_all.copy()
+        df_editable.insert(0, "Aktiv", True)
+        st.session_state["edited_df"] = df_editable
 
-# Prepare dataframe for editor. Add a 'select' column.
-# Reset if the underlying file has changed (by checking if 'edited_df' is missing).
-if "edited_df" not in st.session_state:
-    df_editable = df_all.copy()
-    df_editable.insert(0, "Aktiv", True)
-    st.session_state["edited_df"] = df_editable
+    # Get a list of columns to disable, all except the selection and GKS columns
+    df_before_edit = st.session_state["edited_df"]
+    disabled_cols = [c for c in df_all.columns if c != 'GKS'] # Keep GKS editable
 
-# Get a list of columns to disable, all except the selection and GKS columns
-df_before_edit = st.session_state["edited_df"]
-disabled_cols = [c for c in df_all.columns if c != 'GKS'] # Keep GKS editable
+    edited_df = st.data_editor(
+        df_before_edit,
+        disabled=disabled_cols,
+        hide_index=True,
+        column_config={
+            "BIBT": st.column_config.DatetimeColumn(
+                "BIBT",
+                format="DD.MM.YYYY HH:mm",
+            ),
+            "Aktiv": st.column_config.CheckboxColumn(
+                "Aktiv",
+                default=True,
+            ),
+            "GKS": st.column_config.SelectboxColumn(
+                "GKS",
+                help="Manuelle Zuweisung zu Terminal 1 oder 2. Nur für Flüge ohne feste PPOS-Zuweisung änderbar.",
+                options=["T1", "T2"],
+                required=True,
+            ),
+        },
+        width="stretch"
+    )
 
-edited_df = st.data_editor(
-    df_before_edit,
-    disabled=disabled_cols,
-    hide_index=True,
-    column_config={
-        "BIBT": st.column_config.DatetimeColumn(
-            "BIBT",
-            format="DD.MM.YYYY HH:mm",
-        ),
-        "Aktiv": st.column_config.CheckboxColumn(
-            "Aktiv",
-            default=True,
-        ),
-        "GKS": st.column_config.SelectboxColumn(
-            "GKS",
-            help="Manuelle Zuweisung zu Terminal 1 oder 2. Nur für Flüge ohne feste PPOS-Zuweisung änderbar.",
-            options=["T1", "T2"],
-            required=True,
-        ),
-    },
-    width="stretch"
-)
+    # --- Post-edit validation for GKS column ---
+    locked_ppos = set(FLIGHT_ALLOCATION["T1"]["ppos"]) | set(FLIGHT_ALLOCATION["T2"]["ppos"])
+    reverted_flights = []
 
-# --- Post-edit validation for GKS column ---
-locked_ppos = set(FLIGHT_ALLOCATION["T1"]["ppos"]) | set(FLIGHT_ALLOCATION["T2"]["ppos"])
-reverted_flights = []
+    # Find rows where GKS was changed by comparing with the state before the editor
+    gks_changed_mask = (df_before_edit['GKS'] != edited_df['GKS'])
 
-# Find rows where GKS was changed by comparing with the state before the editor
-gks_changed_mask = (df_before_edit['GKS'] != edited_df['GKS'])
+    if gks_changed_mask.any():
+        changed_indices = edited_df[gks_changed_mask].index
+        for idx in changed_indices:
+            ppos = edited_df.loc[idx, 'PPOS']
+            if str(ppos) in locked_ppos:
+                original_gks = df_before_edit.loc[idx, 'GKS']
+                edited_df.loc[idx, 'GKS'] = original_gks
+                reverted_flights.append(edited_df.loc[idx, 'FLN'])
 
-if gks_changed_mask.any():
-    changed_indices = edited_df[gks_changed_mask].index
-    for idx in changed_indices:
-        ppos = edited_df.loc[idx, 'PPOS']
-        if str(ppos) in locked_ppos:
-            original_gks = df_before_edit.loc[idx, 'GKS']
-            edited_df.loc[idx, 'GKS'] = original_gks
-            reverted_flights.append(edited_df.loc[idx, 'FLN'])
+    if reverted_flights:
+        st.warning(f"Die GKS-Zuweisung für Flüge mit fester PPOS-Zuweisung ({', '.join(sorted(list(set(reverted_flights))))}) kann nicht geändert werden und wurde zurückgesetzt.")
 
-if reverted_flights:
-    st.warning(f"Die GKS-Zuweisung für Flüge mit fester PPOS-Zuweisung ({', '.join(sorted(list(set(reverted_flights))))}) kann nicht geändert werden und wurde zurückgesetzt.")
+    st.session_state["edited_df"] = edited_df
 
-st.session_state["edited_df"] = edited_df
+    # Get selected flights from the editor
+    df_selected_from_editor = edited_df[edited_df["Aktiv"]]
 
-# Get selected flights from the editor
-df_selected_from_editor = edited_df[edited_df["Aktiv"]]
+    # =========================================================
+    # Relevante Flüge für die Simulation
+    # =========================================================
+    flights, t0, df_selected, fallback_count = flights_to_sim_input(df_selected_from_editor)
+
+    # Display count of selected flights
+    st.caption(f"{len(df_selected)} von {len(df_all)} Flügen für die Simulation ausgewählt.")
 
 # Check the _run_simulation flag from sidebar button
 run_btn = st.session_state.get("_run_simulation", False)
@@ -448,11 +502,6 @@ run_btn = st.session_state.get("_run_simulation", False)
 # =========================================================
 # Relevante Flüge für die Simulation
 # =========================================================
-flights, t0, df_selected, fallback_count = flights_to_sim_input(df_selected_from_editor)
-
-# Display count of selected flights
-st.caption(f"{len(df_selected)} von {len(df_all)} Flügen für die Simulation ausgewählt.")
-
 if not flights:
     st.warning("Keine Flüge nach FLN-Auswahl.")
     st.stop()
@@ -464,21 +513,9 @@ if not flights:
 if run_btn:
     # Reset the flag so it doesn't persist across reruns
     st.session_state["_run_simulation"] = False
-    
-    mix_sum = (
-        st.session_state["mix_easypass"] +
-        st.session_state["mix_eu_manual"] +
-        st.session_state["mix_tcn_at"] +
-        st.session_state["mix_tcn_v"]
-    )
-    if mix_sum != 100:
-        st.error("Passagiermix muss exakt 100% ergeben.")
-        st.stop()
 
     # Werte aus Session State lesen
     process_time_scale = st.session_state["process_time_scale_pct"] / 100.0
-    ees_choice = st.session_state["ees_choice"]
-    ees_registered_share = {"100:0": 1.0, "75:25": 0.75, "50:50": 0.5, "0:100": 0.0}.get(ees_choice, 0.0)
     sim_params = dict(
         deboard_offset_min=st.session_state["deboard_offset_min"],
         deboard_delay_min_s=st.session_state["deboard_delay_min_s"],
@@ -495,7 +532,6 @@ if run_btn:
         share_tcn_at=st.session_state["mix_tcn_at"] / 100.0,
         share_tcn_v=st.session_state["mix_tcn_v"] / 100.0,
         tcn_at_target=st.session_state["tcn_at_target"],
-        ees_registered_share=ees_registered_share,
         mu_easypass_s=st.session_state["mu_easypass_s"],
         sigma_easypass_s=st.session_state["sigma_easypass_s"],
         max_easypass_s=st.session_state["max_easypass_s"] * process_time_scale,
@@ -504,10 +540,8 @@ if run_btn:
         max_eu_s=st.session_state["max_eu_s"] * process_time_scale,
         mean_sss_s=st.session_state["mean_sss_s"] * process_time_scale,
         sd_sss_s=st.session_state["sd_sss_s"] * process_time_scale,
-        mu_tcn_v_reg_s=st.session_state["mu_tcn_v_reg_s"],
-        sigma_tcn_v_reg_s=st.session_state["sigma_tcn_v_reg_s"],
-        mu_tcn_v_unreg_s=st.session_state["mu_tcn_v_unreg_s"],
-        sigma_tcn_v_unreg_s=st.session_state["sigma_tcn_v_unreg_s"],
+        mu_tcn_v_s=st.session_state["mu_tcn_v_s"],
+        sigma_tcn_v_s=st.session_state["sigma_tcn_v_s"],
         max_tcn_v_s=st.session_state["max_tcn_v_s"] * process_time_scale,
     )
 
@@ -549,6 +583,7 @@ if run_btn:
 
             # Konfiguration T1
             cfg_t1 = SimConfig(
+                service_level_min=service_level_min,
                 cap_tcn_schedule=cap_tcn_schedule_t1,
                 cap_eu_schedule=cap_eu_schedule_t1,
                 cap_sss=(st.session_state["cap_sss_t1"] if st.session_state["sss_enabled_t1"] else 0),
@@ -558,6 +593,7 @@ if run_btn:
             )
             # Konfiguration T2
             cfg_t2 = SimConfig(
+                service_level_min=service_level_min,
                 cap_tcn_schedule=cap_tcn_schedule_t2,
                 cap_eu_schedule=cap_eu_schedule_t2,
                 cap_sss=(st.session_state["cap_sss"] if st.session_state["sss_enabled_t2"] else 0),
@@ -568,22 +604,22 @@ if run_btn:
 
             # Simulationen ausführen
             m1 = run_simulation(flights_t1, cfg_t1, t0, seed=run_seed)
-            df_res_t1 = pd.DataFrame([r.__dict__ for r in m1.results])
+            df_res_t1 = pd.DataFrame([asdict(r) for r in m1.results])
             if not df_res_t1.empty:
                 df_res_t1["wait_total"] = df_res_t1["wait_sss"] + df_res_t1["wait_easypass"] + df_res_t1["wait_eu"] + df_res_t1["wait_tcn"]
             ts_t1 = m1.queue_ts
 
             m2 = run_simulation(flights_t2, cfg_t2, t0, seed=run_seed)
-            df_res_t2 = pd.DataFrame([r.__dict__ for r in m2.results])
+            df_res_t2 = pd.DataFrame([asdict(r) for r in m2.results])
             if not df_res_t2.empty:
                 df_res_t2["wait_total"] = df_res_t2["wait_sss"] + df_res_t2["wait_easypass"] + df_res_t2["wait_eu"] + df_res_t2["wait_tcn"]
             ts_t2 = m2.queue_ts
 
             # Ergebnisse analysieren und Kapazität anpassen
-            breaches_tcn_t1 = get_schedule_breaches(df_res_t1, t0, service_level_min, groups=["TCN_V", "TCN_AT"])
-            breaches_eu_t1 = get_schedule_breaches(df_res_t1, t0, service_level_min, groups=["EU_MANUAL"])
-            breaches_tcn_t2 = get_schedule_breaches(df_res_t2, t0, service_level_min, groups=["TCN_V", "TCN_AT"])
-            breaches_eu_t2 = get_schedule_breaches(df_res_t2, t0, service_level_min, groups=["EU_MANUAL"])
+            breaches_tcn_t1 = get_schedule_breaches(df_res_t1, t0, service_level_min, groups=["TCN_V", "TCN_AT"], value_col="wait_tcn")
+            breaches_eu_t1 = get_schedule_breaches(df_res_t1, t0, service_level_min, groups=["EU_MANUAL"], value_col="wait_eu")
+            breaches_tcn_t2 = get_schedule_breaches(df_res_t2, t0, service_level_min, groups=["TCN_V", "TCN_AT"], value_col="wait_tcn")
+            breaches_eu_t2 = get_schedule_breaches(df_res_t2, t0, service_level_min, groups=["EU_MANUAL"], value_col="wait_eu")
 
             # Definiere alle Anpassungs-Szenarien, um Code-Duplizierung zu vermeiden
             scenarios = [
@@ -639,6 +675,7 @@ if "last_df_res_t1" in st.session_state and "last_df_res_t2" in st.session_state
     cfg_t1 = st.session_state.get("last_cfg_t1")
     cfg_t2 = st.session_state.get("last_cfg_t2")
     t0 = st.session_state.get("last_t0", 0)
+    df_selected = st.session_state.get("last_df_selected")
     
     # Ergebnisse zusammenführen
     if not df_res_t1.empty:
@@ -651,93 +688,125 @@ if "last_df_res_t1" in st.session_state and "last_df_res_t2" in st.session_state
     if df_res.empty:
         st.warning("Keine Passagiere simuliert.")
     else:
+        # BIBT zum df_res hinzufügen, um nach Flug-Ankunftsstunde gruppieren zu können
+        if df_selected is not None:
+            df_selected_with_key = df_selected.reset_index().copy()
+            df_selected_with_key["flight_key"] = (
+                df_selected_with_key["BIBT"].dt.strftime('%Y%m%d-%H%M') + "_" +
+                df_selected_with_key["PPOS"].astype(str) + "_" +
+                df_selected_with_key["FLN"].astype(str) + "_" +
+                df_selected_with_key["index"].astype(str)
+            )
+            df_res = pd.merge(df_res, df_selected_with_key[['flight_key', 'BIBT']], on='flight_key', how='left')
+
         # Gesamtwartezeit
         df_res["wait_total"] = df_res["wait_sss"] + df_res["wait_easypass"] + df_res["wait_eu"] + df_res["wait_tcn"]
         
-        # --- KPIs Metrics ---
-        st.subheader("KPIs (Metriken)")
-        
-        # Fester Schwellwert
-        KPI_THRESH_MIN = 30
-
         # Berechnungen für KPIs
         df_res_t1_filtered = df_res[df_res['terminal'] == 'T1']
         df_res_t2_filtered = df_res[df_res['terminal'] == 'T2']
         
-        p95_wait_t1 = df_res_t1_filtered["wait_total"].quantile(0.95) if not df_res_t1_filtered.empty else 0
-        p95_wait_t2 = df_res_t2_filtered["wait_total"].quantile(0.95) if not df_res_t2_filtered.empty else 0
-        pct_over_t1 = (df_res_t1_filtered["wait_total"] > KPI_THRESH_MIN).mean() * 100.0 if not df_res_t1_filtered.empty else 0.0
-        pct_over_t2 = (df_res_t2_filtered["wait_total"] > KPI_THRESH_MIN).mean() * 100.0 if not df_res_t2_filtered.empty else 0.0
+        # --- Terminal 1 Calculations ---
+        pax_t1 = len(df_res_t1_filtered)
 
-        # Max Queue Helper
-        def _get_max_q_info(df_ts):
-            if df_ts.empty: return 0, "-", "-"
-            q_cols = [c for c in df_ts.columns if c.startswith("q_")]
-            if not q_cols: return 0, "-", "-"
-            
-            max_val = df_ts[q_cols].max().max()
-            if max_val == 0: return 0, "-", "-"
-            
-            # Zeitpunkt des Peaks finden (erste Zeile, in der das Max erreicht wird)
-            idx = df_ts[q_cols].max(axis=1).idxmax()
-            col = df_ts.loc[idx, q_cols].idxmax()
-            
-            t_min_val = df_ts.loc[idx, "t_min"]
-            peak_time = t0 + pd.to_timedelta(t_min_val, unit="m")
-            
-            st_map = {"q_sss": "SSS", "q_easypass": "Easypass", "q_eu": "EU", "q_tcn": "TCN"}
-            return int(max_val), peak_time.strftime("%H:%M"), st_map.get(col, col)
+        # --- Terminal 2 Calculations ---
+        pax_t2 = len(df_res_t2_filtered)
 
-        mq_t1, t_t1, s_t1 = _get_max_q_info(st.session_state.get("last_df_ts_t1", pd.DataFrame()))
-        mq_t2, t_t2, s_t2 = _get_max_q_info(st.session_state.get("last_df_ts_t2", pd.DataFrame()))
-        
-        # Anzeige der Haupt-KPIs
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("P95 Wartezeit T1", f"{p95_wait_t1:.1f} min")
-        c2.metric(f"% > {KPI_THRESH_MIN} min T1", f"{pct_over_t1:.1f} %")
-        c3.metric("P95 Wartezeit T2", f"{p95_wait_t2:.1f} min")
-        c4.metric(f"% > {KPI_THRESH_MIN} min T2", f"{pct_over_t2:.1f} %")
-        
-        # Details je Terminal
-        st.caption("Details: Aufkommen & Peaks je Terminal")
-        pax_t1 = len(df_res[df_res['terminal'] == 'T1'])
-        pax_t2 = len(df_res[df_res['terminal'] == 'T2'])
-        cp1, cp2, cp3, cp4 = st.columns(4)
-        cp1.metric("Passagiere T1", f"{pax_t1:,}".replace(",", "."))
-        cp2.metric("Max Queue T1", f"{mq_t1} Pax", delta=f"um {t_t1} ({s_t1})", delta_color="off")
-        cp3.metric("Passagiere T2", f"{pax_t2:,}".replace(",", "."))
-        cp4.metric("Max Queue T2", f"{mq_t2} Pax", delta=f"um {t_t2} ({s_t2})", delta_color="off")
-        
-        st.markdown("---")
-
-        # Optional: 4er-Gruppe (V × EES) sichtbar machen
-        if "ees_status" in df_res.columns:
-            df_res["group_4"] = df_res["group"]
-            mask = df_res["group"].isin(["TCN_V"])
-            df_res.loc[mask, "group_4"] = (
-                df_res.loc[mask, "group"] + "_" + df_res.loc[mask, "ees_status"].fillna("NA")
-            )
+        # Internes DataFrame: Passagiere pro Stunde und Terminal (keine Anzeige)
+        df_hourly_pax = df_res.copy()
+        # Gruppierung nach der Stunde der BIBT des Fluges, nicht nach Ankunftszeit am Terminal
+        if 'BIBT' in df_hourly_pax.columns and not df_hourly_pax['BIBT'].isna().all():
+            df_hourly_pax["hour_of_day"] = df_hourly_pax["BIBT"].dt.hour
+        else: # Fallback auf alte Logik, falls BIBT nicht gemerged werden konnte
+            df_hourly_pax["hour_of_day"] = (t0 + pd.to_timedelta(df_hourly_pax["arrival_min"], unit="m")).dt.hour
+        if not df_hourly_pax.empty:
+            df_hourly_pax = df_hourly_pax.groupby(["hour_of_day", "terminal"]).size().unstack(fill_value=0)
+            min_hour, max_hour = df_hourly_pax.index.min(), df_hourly_pax.index.max()
+            # Sicherstellen, dass der Zeitbereich breit genug für ein Diagramm ist (mind. 2 Punkte)
+            if min_hour == max_hour:
+                max_hour += 1
+            df_hourly_pax = df_hourly_pax.reindex(range(min_hour, max_hour + 1), fill_value=0)
         else:
-            df_res["group_4"] = df_res["group"]
-        
+            df_hourly_pax = pd.DataFrame(columns=["T1", "T2"]).reindex(range(6, 24), fill_value=0)
+        # Sicherstellen, dass T1 und T2 existieren, auch wenn keine Pax da waren
+        for term in ["T1", "T2"]:
+            if term not in df_hourly_pax.columns:
+                df_hourly_pax[term] = 0
+        df_hourly_pax = df_hourly_pax.fillna(0).astype(int)
+
+        # Internes DataFrame: P95 Wartezeit pro Stunde für EU_MANUAL (keine Anzeige)
+        df_hourly_p95_wait_eu = df_res[df_res['group'] == 'EU_MANUAL'].copy()
+        if not df_hourly_p95_wait_eu.empty:
+            if 'BIBT' in df_hourly_p95_wait_eu.columns and not df_hourly_p95_wait_eu['BIBT'].isna().all():
+                df_hourly_p95_wait_eu["hour_of_day"] = df_hourly_p95_wait_eu["BIBT"].dt.hour
+            else: # Fallback
+                df_hourly_p95_wait_eu["hour_of_day"] = (t0 + pd.to_timedelta(df_hourly_p95_wait_eu["arrival_min"], unit="m")).dt.hour
+            df_hourly_p95_wait_eu = df_hourly_p95_wait_eu.groupby(["hour_of_day", "terminal"])["wait_eu"].quantile(0.95).unstack(fill_value=0)
+            min_hour, max_hour = df_hourly_p95_wait_eu.index.min(), df_hourly_p95_wait_eu.index.max()
+            # Sicherstellen, dass der Zeitbereich breit genug für ein Diagramm ist (mind. 2 Punkte)
+            if min_hour == max_hour:
+                max_hour += 1
+            df_hourly_p95_wait_eu = df_hourly_p95_wait_eu.reindex(range(min_hour, max_hour + 1), fill_value=0.0)
+        else:
+            df_hourly_p95_wait_eu = pd.DataFrame(columns=["T1", "T2"]).reindex(range(6, 24), fill_value=0.0)
+        # Sicherstellen, dass T1 und T2 existieren
+        for term in ["T1", "T2"]:
+            if term not in df_hourly_p95_wait_eu.columns:
+                df_hourly_p95_wait_eu[term] = 0.0
+        df_hourly_p95_wait_eu = df_hourly_p95_wait_eu.fillna(0).astype(float).round(1)
+
+        # Internes DataFrame: P95 Wartezeit pro Stunde für TCN (keine Anzeige)
+        df_hourly_p95_wait_tcn = df_res[df_res['group'].isin(['TCN_V', 'TCN_AT'])].copy()
+        if not df_hourly_p95_wait_tcn.empty:
+            if 'BIBT' in df_hourly_p95_wait_tcn.columns and not df_hourly_p95_wait_tcn['BIBT'].isna().all():
+                df_hourly_p95_wait_tcn["hour_of_day"] = df_hourly_p95_wait_tcn["BIBT"].dt.hour
+            else: # Fallback
+                df_hourly_p95_wait_tcn["hour_of_day"] = (t0 + pd.to_timedelta(df_hourly_p95_wait_tcn["arrival_min"], unit="m")).dt.hour
+            df_hourly_p95_wait_tcn = df_hourly_p95_wait_tcn.groupby(["hour_of_day", "terminal"])["wait_tcn"].quantile(0.95).unstack(fill_value=0)
+            min_hour, max_hour = df_hourly_p95_wait_tcn.index.min(), df_hourly_p95_wait_tcn.index.max()
+            # Sicherstellen, dass der Zeitbereich breit genug für ein Diagramm ist (mind. 2 Punkte)
+            if min_hour == max_hour:
+                max_hour += 1
+            df_hourly_p95_wait_tcn = df_hourly_p95_wait_tcn.reindex(range(min_hour, max_hour + 1), fill_value=0.0)
+        else:
+            df_hourly_p95_wait_tcn = pd.DataFrame(columns=["T1", "T2"]).reindex(range(6, 24), fill_value=0.0)
+        # Sicherstellen, dass T1 und T2 existieren
+        for term in ["T1", "T2"]:
+            if term not in df_hourly_p95_wait_tcn.columns:
+                df_hourly_p95_wait_tcn[term] = 0.0
+        df_hourly_p95_wait_tcn = df_hourly_p95_wait_tcn.fillna(0).astype(float).round(1)
+
+        # KPI-Wert ist das Maximum der stündlichen P95-Werte
+        p95_wait_eu_t1 = df_hourly_p95_wait_eu["T1"].max() if "T1" in df_hourly_p95_wait_eu.columns else 0
+        p95_wait_eu_t2 = df_hourly_p95_wait_eu["T2"].max() if "T2" in df_hourly_p95_wait_eu.columns else 0
+        p95_wait_tcn_t1 = df_hourly_p95_wait_tcn["T1"].max() if "T1" in df_hourly_p95_wait_tcn.columns else 0
+        p95_wait_tcn_t2 = df_hourly_p95_wait_tcn["T2"].max() if "T2" in df_hourly_p95_wait_tcn.columns else 0
+    
         total = int(len(df_res))
         
         # Plots
         from plotting import build_queue_timeseries_rolling, plot_queue_over_time_rolling, plot_mean_wait_over_time_rolling, plot_pax_arrival_stacked_bar, plot_terminal_overview_combined, plot_queue_heatmap
-        st.subheader("Diagramme (Warteschlangen & Wartezeiten)")
+        #st.subheader("Detailanalyse pro Terminal")
         
         selected_terminal_tab = st.radio(
-            "Wählen Sie ein Terminal zur Detailansicht:",
+            "Terminal auswählen",
             ["Terminal 1", "Terminal 2"],
             horizontal=True,
         )
-        st.markdown("---")
         
         if selected_terminal_tab == "Terminal 1":
             render_terminal_details("T1", df_res, t0)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("**T1** EU-manual - P95 Wartezeit (Max/h)", f"{p95_wait_eu_t1:.1f} min", chart_data=df_hourly_p95_wait_eu["T1"], chart_type="area", border=True)
+            c2.metric("**T1** TCN - P95 Wartezeit (Max/h)", f"{p95_wait_tcn_t1:.1f} min", chart_data=df_hourly_p95_wait_tcn["T1"], chart_type="area", border=True)
+            c3.metric("**T1** - Anzahl Passagiere", f"{pax_t1:,}".replace(",", "."), chart_data=df_hourly_pax["T1"], chart_type="area", border=True)
         
         if selected_terminal_tab == "Terminal 2":
             render_terminal_details("T2", df_res, t0)
+            cp1, cp2, cp3 = st.columns(3)
+            cp1.metric("**T2** EU-manual - P95 Wartezeit (Max/h)", f"{p95_wait_eu_t2:.1f} min", chart_data=df_hourly_p95_wait_eu["T2"], chart_type="area", border=True)
+            cp2.metric("**T2** TCN - P95 Wartezeit (Max/h)", f"{p95_wait_tcn_t2:.1f} min", chart_data=df_hourly_p95_wait_tcn["T2"], chart_type="area", border=True)
+            cp3.metric("**T2** - Anzahl Passagiere", f"{pax_t2:,}".replace(",", "."), chart_data=df_hourly_pax["T2"], chart_type="area", border=True)
         
         # Bus Arrivals Plot
         st.subheader("Bus-Ankünfte (Bulks)")
@@ -819,7 +888,7 @@ if "last_df_res_t1" in st.session_state and "last_df_res_t2" in st.session_state
         # Group Summary
         st.subheader("Gruppenübersicht")
         df_gsum = (
-            df_res.groupby("group_4", as_index=False)
+            df_res.groupby("group", as_index=False)
             .agg(
                 spax=("pax_id", "count"),
                 mean_wait=("wait_total", "mean"),

@@ -9,7 +9,6 @@ Eine Streamlit-basierte, diskrete Ereignissimulation zur Analyse und Visualisier
 *   **Flexible Konfiguration**: Nahezu alle Simulationsparameter (Prozesszeiten, Passagiermix, Kapazitäten, Gehgeschwindigkeiten etc.) sind über die UI einstellbar.
 *   **Iterative Kapazitätsanpassung**: Ein "Passbox"-Modus ermittelt iterativ die benötigten Schalterkapazitäten, um ein definiertes Service-Level (maximale Wartezeit) zu erreichen.
 *   **Umfassende Visualisierung**: Interaktive Diagramme (Zeitreihen, Heatmaps) und Tabellen zur detaillierten Analyse der Ergebnisse (Wartezeiten, Warteschlangenlängen, KPIs).
-*   **Speichern & Laden**: Benutzereinstellungen können gespeichert und wieder geladen werden, um die Reproduzierbarkeit zu gewährleisten.
 
 ## 🚀 Installation & Start
 
@@ -75,8 +74,8 @@ Das Projekt ist modular aufgebaut, um die Wartbarkeit zu erleichtern:
 *   `settings_sidebar.py`: Rendert die komplette Einstellungs-Seitenleiste und deren Logik.
 *   `plotting.py`: Enthält alle Funktionen zur Erstellung der `plotly`-Diagramme.
 *   `session_state_init.py`: Verwaltet die Initialisierung, das Speichern und Laden des `st.session_state`.
-*   `passenger_data.py`: Eine zentrale Konfigurationsdatei für die meisten Standard-Simulationsparameter (z.B. Prozesszeiten, Kapazitäten, Passagiermix).
-*   `flight_allocation.py`, `ppos_distances.py`, `typ4_defaults.py`: Enthalten statische Mapping-Daten für die Terminalzuweisung, Gehdistanzen und Flugzeugtypen.
+*   `parameter.py`: Eine zentrale Konfigurationsdatei für die meisten Standard-Simulationsparameter (z.B. Prozesszeiten, Kapazitäten, Passagiermix) sowie die Flug-zu-Terminal-Zuweisung und Gehdistanzen.
+*   `typ4_defaults.py`: Enthält statische Mapping-Daten für Flugzeugtypen.
 
 ### Wichtige Abhängigkeiten
 
@@ -87,7 +86,7 @@ Das Projekt ist modular aufgebaut, um die Wartbarkeit zu erleichtern:
 
 ### Konfiguration
 
-Die meisten "magischen Zahlen" und Standardwerte sind in `passenger_data.py` zentralisiert. Wenn Sie grundlegende Annahmen der Simulation (z.B. die durchschnittliche Prozesszeit am EU-Schalter) ändern möchten, ist dies der richtige Ort.
+Die meisten "magischen Zahlen" und Standardwerte sind in `parameter.py` zentralisiert. Wenn Sie grundlegende Annahmen der Simulation (z.B. die durchschnittliche Prozesszeit am EU-Schalter) ändern möchten, ist dies der richtige Ort.
 
 ## 📋 Eingabedaten: Flugplan
 
