@@ -17,17 +17,15 @@ from typing import Dict, Any, List, Optional
 
 import simpy
 
-from passenger_data import (
+from parameter import (
     MEAN_SSS_S, SD_SSS_S,
-    MU_TCN_V_REG_S_SSS_ENABLED, SIGMA_TCN_V_REG_S_SSS_ENABLED, MU_TCN_V_UNREG_S_SSS_ENABLED, SIGMA_TCN_V_UNREG_S_SSS_ENABLED,
-    MU_TCN_V_REG_S_SSS_DISABLED, SIGMA_TCN_V_REG_S_SSS_DISABLED, MU_TCN_V_UNREG_S_SSS_DISABLED,
-    SIGMA_TCN_V_UNREG_S_SSS_DISABLED,
+    MU_TCN_V_S_SSS_ENABLED, SIGMA_TCN_V_S_SSS_ENABLED, MU_TCN_V_S_SSS_DISABLED, SIGMA_TCN_V_S_SSS_DISABLED,
     MAX_TCN_V_S,
     MU_EASYPASS_S, SIGMA_EASYPASS_S, MAX_EASYPASS_S,
     MU_EU_S, SIGMA_EU_S, MAX_EU_S, DEBOARD_DELAY_MIN_S, DEBOARD_DELAY_MAX_S,
     BUS_CAPACITY, BUS_FILL_TIME_MIN, BUS_TRAVEL_TIME_MIN,
+    PPOS_DISTANCE_M,
 )
-from ppos_distances import PPOS_DISTANCE_M
 
 
 # Interne Gruppen
@@ -44,10 +42,8 @@ class SimConfig:
     # Zeitabhängige Kapazitätspläne
     cap_tcn_schedule: dict[str, int] # Zeitplan für TCN-Schalter
     cap_eu_schedule: dict[str, int]
-    mu_tcn_v_reg_s: float
-    sigma_tcn_v_reg_s: float
-    mu_tcn_v_unreg_s: float
-    sigma_tcn_v_unreg_s: float
+    mu_tcn_v_s: float
+    sigma_tcn_v_s: float
     max_tcn_v_s: float
 
     # EASYPASS
@@ -60,12 +56,13 @@ class SimConfig:
     sigma_eu_s: float
     max_eu_s: float
 
+    # Service Level Ziel in Minuten
+    service_level_min: float
+
     # Kapazitäten
     cap_sss: int = 6
     cap_easypass: int = 8
 
-    # EES-Verteilung (nur für TCN_V)
-    ees_registered_share: float = 0.75
     # SSS aktiviert/deaktiviert
     sss_enabled: bool = True
 
@@ -130,7 +127,6 @@ class PassengerResult:
     used_easypass: bool = False
     used_eu: bool = False
     used_tcn: bool = False
-    ees_status: str | None = None  # "EES_registered" | "EES_unregistered" | None
 
 
 # =========================================================
@@ -157,7 +153,6 @@ def _service_time_min(
     rng: random.Random,
     station: str,
     group: str | None = None,
-    ees_status: str | None = None,
 ) -> float:
     """
     Berechnet die Servicezeit für eine gegebene Station in Minuten.
@@ -167,7 +162,6 @@ def _service_time_min(
         rng: Der Zufallszahlengenerator.
         station: Der Name der Station (z.B. "SSS", "TCN").
         group: Die Passagiergruppe (relevant für TCN).
-        ees_status: Der EES-Status des Passagiers (relevant für TCN).
 
     Returns:
         Die Servicezeit in Minuten.
@@ -186,14 +180,8 @@ def _service_time_min(
 
     # ---- TCN: V x reg/unreg ----
     if station == "TCN":
-        if group in ("TCN_V", "TCN_AT") and ees_status in ("EES_registered", "EES_unregistered"):
-            if ees_status == "EES_registered":
-                return _lognorm(rng, cfg.mu_tcn_v_reg_s, cfg.sigma_tcn_v_reg_s, cfg.max_tcn_v_s) / 60.0
-            if ees_status == "EES_unregistered":
-                return _lognorm(rng, cfg.mu_tcn_v_unreg_s, cfg.sigma_tcn_v_unreg_s, cfg.max_tcn_v_s) / 60.0
-
-        # Fallback
-        #return _pos_normal(rng, cfg.mean_tcn_s, cfg.sd_tcn_s) / 60.0
+        if group in ("TCN_V", "TCN_AT"):
+            return _lognorm(rng, cfg.mu_tcn_v_s, cfg.sigma_tcn_v_s, cfg.max_tcn_v_s) / 60.0
 
     raise ValueError(station)
 
@@ -242,9 +230,6 @@ class _DisabledResource:
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def __await__(self):
-            return self._event.__await__()
-
     def request(self):
         return _DisabledResource._ReqCtx(self._env)
 
@@ -256,11 +241,15 @@ class BorderControlModel:
     enthält die Logik für die Passagierprozesse und sammelt die Ergebnisse.
     """
     
-    def __init__(self, env: simpy.Environment, cfg: SimConfig, rng: random.Random, t0: pd.Timestamp):
+    def __init__(self, env: simpy.Environment, cfg: SimConfig, rng: random.Random, t0: pd.Timestamp, expected_passengers: int = 0):
         self.env = env
         self.cfg = cfg
         self.rng = rng
         self.t0 = t0
+        self.expected_passengers = expected_passengers
+        self.all_passengers_done = env.event()
+        if self.expected_passengers == 0:
+            self.all_passengers_done.succeed()
 
         # Create real simpy resources only when enabled and capacity > 0.
         if getattr(cfg, "sss_enabled", True) and cfg.cap_sss and cfg.cap_sss > 0:
@@ -269,19 +258,26 @@ class BorderControlModel:
             self.sss = _DisabledResource(env)
         self.easypass = simpy.Resource(env, capacity=cfg.cap_easypass)
         
-        # TCN wird als Store mit zeitlich variabler Kapazität modelliert
+        # TCN wird als Server-Store mit zeitlich variabler Kapazität modelliert.
         self.tcn = simpy.Store(env)
         self.tcn_in_use = 0
         self.current_tcn_capacity = 0
+        self.tcn_pending_removals = 0
+        self.tcn_server_seq = 0
         self.env.process(self.tcn_capacity_manager())
 
-        # EU wird ebenfalls als Store mit zeitlich variabler Kapazität modelliert,
-        # um die Priorisierungslogik (EU > TCN_V) zu erhalten, enthält der Store
-        # einzelne PriorityResources.
-        self.eu = simpy.Store(env)
+        # EU wird als Prioritätswarteschlange plus Server-Store modelliert,
+        # damit Prioritäten global über alle EU-Server greifen.
+        self.eu_servers = simpy.Store(env)
+        self.eu_waiters = simpy.PriorityStore(env)
         self.eu_in_use = 0
         self.current_eu_capacity = 0
         self.eu_manual_wait_count = 0
+        self.eu_pending_removals = 0
+        self.eu_server_seq = 0
+        self.eu_request_seq = 0
+        self.eu_dispatch_signal = env.event()
+        self.env.process(self.eu_dispatcher())
         self.env.process(self.eu_capacity_manager())
 
         self.results: List[PassengerResult] = []
@@ -293,13 +289,54 @@ class BorderControlModel:
             "t_min": float(self.env.now),
             "q_sss": len(self.sss.queue), "in_sss": self.sss.count,
             "q_easypass": len(self.easypass.queue), "in_easypass": self.easypass.count,
-            "q_eu": len(self.eu.get_queue), "in_eu": self.eu_in_use,
+            "q_eu": len(self.eu_waiters.items), "in_eu": self.eu_in_use,
             "q_tcn": len(self.tcn.get_queue), "in_tcn": self.tcn_in_use,
         })
 
     def eu_manual_waiting(self) -> bool:
         """Prüft, ob aktuell Passagiere der Gruppe EU_MANUAL auf einen Schalter warten."""
         return self.eu_manual_wait_count > 0
+
+    def _notify_eu_dispatcher(self):
+        """Weckt den EU-Dispatcher auf, wenn neue Server oder Wartende vorliegen."""
+        if not self.eu_dispatch_signal.triggered:
+            self.eu_dispatch_signal.succeed()
+        self.eu_dispatch_signal = self.env.event()
+
+    def _remove_idle_servers(self, store: simpy.Store, count: int) -> int:
+        """Entfernt bis zu `count` freie Server direkt aus einem Store."""
+        removed = min(count, len(store.items))
+        for _ in range(removed):
+            store.items.pop()
+        return removed
+
+    def _release_tcn_server(self, server: Any):
+        """Gibt einen TCN-Server frei oder entfernt ihn bei geplanter Kapazitätsreduktion."""
+        if self.tcn_pending_removals > 0:
+            self.tcn_pending_removals -= 1
+            return
+        yield self.tcn.put(server)
+
+    def _release_eu_server(self, server: Any):
+        """Gibt einen EU-Server frei oder entfernt ihn bei geplanter Kapazitätsreduktion."""
+        if self.eu_pending_removals > 0:
+            self.eu_pending_removals -= 1
+            return
+        yield self.eu_servers.put(server)
+        self._notify_eu_dispatcher()
+
+    def eu_dispatcher(self):
+        """
+        Verteilt freie EU-Server an wartende Passagiere nach globaler Priorität.
+        """
+        while True:
+            while self.eu_servers.items and self.eu_waiters.items:
+                server = yield self.eu_servers.get()
+                _, _, assigned_event = yield self.eu_waiters.get()
+                self.eu_in_use += 1
+                self.snapshot()
+                assigned_event.succeed(server)
+            yield self.eu_dispatch_signal
 
     def do_station(self, station: str, pr: PassengerResult, eu_priority: int = 0):
         """
@@ -321,7 +358,7 @@ class BorderControlModel:
             with self.sss.request() as req:
                 yield req
                 t_start = float(self.env.now)
-                serv = _service_time_min(self.cfg, self.rng, "SSS", pr.group, pr.ees_status)
+                serv = _service_time_min(self.cfg, self.rng, "SSS", pr.group)
                 yield self.env.timeout(serv)
                 if changeover_min > 0:
                     yield self.env.timeout(changeover_min)
@@ -344,23 +381,22 @@ class BorderControlModel:
         elif station == "EU":
             if eu_priority == 0:
                 self.eu_manual_wait_count += 1
-            
-            # Einen verfügbaren EU-Schalter (als PriorityResource) aus dem Store holen
-            server_resource = yield self.eu.get()
-            self.eu_in_use += 1
-            self.snapshot()
 
-            with server_resource.request(priority=eu_priority) as req:
-                yield req
-                if eu_priority == 0:
-                    self.eu_manual_wait_count -= 1
-                t_start = float(self.env.now)
-                serv = _service_time_min(self.cfg, self.rng, "EU")
-                yield self.env.timeout(serv)
-                if changeover_min > 0:
-                    yield self.env.timeout(changeover_min)
-            
-            yield self.eu.put(server_resource)
+            assigned_event = self.env.event()
+            self.eu_request_seq += 1
+            yield self.eu_waiters.put((eu_priority, self.eu_request_seq, assigned_event))
+            self._notify_eu_dispatcher()
+
+            server_resource = yield assigned_event
+            if eu_priority == 0:
+                self.eu_manual_wait_count -= 1
+            t_start = float(self.env.now)
+            serv = _service_time_min(self.cfg, self.rng, "EU")
+            yield self.env.timeout(serv)
+            if changeover_min > 0:
+                yield self.env.timeout(changeover_min)
+
+            yield from self._release_eu_server(server_resource)
             self.eu_in_use -= 1
             pr.used_eu = True
             pr.wait_eu += t_start - t_arr
@@ -372,12 +408,12 @@ class BorderControlModel:
             self.snapshot() # Snapshot after getting server to correctly show queue and usage
             
             t_start = float(self.env.now)
-            serv = _service_time_min(self.cfg, self.rng, "TCN", pr.group, pr.ees_status)
+            serv = _service_time_min(self.cfg, self.rng, "TCN", pr.group)
             yield self.env.timeout(serv)
             if changeover_min > 0:
                 yield self.env.timeout(changeover_min)
             
-            yield self.tcn.put(server)
+            yield from self._release_tcn_server(server)
             self.tcn_in_use -= 1
             pr.used_tcn = True
             pr.wait_tcn += t_start - t_arr
@@ -414,8 +450,9 @@ class BorderControlModel:
                 initial_cap = cap
         
         self.current_tcn_capacity = initial_cap
-        for i in range(initial_cap):
-            yield self.tcn.put(f"TCN-Server-{i}")
+        for _ in range(initial_cap):
+            self.tcn_server_seq += 1
+            yield self.tcn.put(f"TCN-Server-{self.tcn_server_seq}")
 
         # 3. Eine Liste aller zukünftigen Kapazitätsänderungen erstellen
         events = []
@@ -437,11 +474,13 @@ class BorderControlModel:
 
             diff = new_cap - self.current_tcn_capacity
             if diff > 0:
-                for i in range(diff):
-                    yield self.tcn.put(f"TCN-Server-Dynamic-{self.env.now}-{i}")
+                for _ in range(diff):
+                    self.tcn_server_seq += 1
+                    yield self.tcn.put(f"TCN-Server-{self.tcn_server_seq}")
             elif diff < 0:
-                for _ in range(abs(diff)):
-                    yield self.tcn.get()
+                remove_count = abs(diff)
+                removed_now = self._remove_idle_servers(self.tcn, remove_count)
+                self.tcn_pending_removals += remove_count - removed_now
             self.current_tcn_capacity = new_cap
 
     def eu_capacity_manager(self):
@@ -449,7 +488,8 @@ class BorderControlModel:
         Ein `simpy`-Prozess, der die Kapazität der EU-Station dynamisch anpasst.
 
         Dieser Prozess liest den Kapazitätsplan aus der Konfiguration und fügt
-        zum richtigen Zeitpunkt `simpy.PriorityResource`-Objekte zum `simpy.Store` hinzu oder entfernt sie.
+        zum richtigen Zeitpunkt EU-Server zum Server-Store hinzu oder markiert
+        Server für eine verzögerte Entnahme, sobald belegte Server wieder frei werden.
         """
         
         # 1. Parse schedule from config
@@ -473,8 +513,10 @@ class BorderControlModel:
                 initial_cap = cap
         
         self.current_eu_capacity = initial_cap
-        for i in range(initial_cap):
-            yield self.eu.put(simpy.PriorityResource(self.env, capacity=1))
+        for _ in range(initial_cap):
+            self.eu_server_seq += 1
+            yield self.eu_servers.put(f"EU-Server-{self.eu_server_seq}")
+        self._notify_eu_dispatcher()
 
         # 3. Eine Liste aller zukünftigen Kapazitätsänderungen erstellen
         events = []
@@ -493,14 +535,17 @@ class BorderControlModel:
 
             diff = new_cap - self.current_eu_capacity
             if diff > 0:
-                for i in range(diff):
-                    yield self.eu.put(simpy.PriorityResource(self.env, capacity=1))
+                for _ in range(diff):
+                    self.eu_server_seq += 1
+                    yield self.eu_servers.put(f"EU-Server-{self.eu_server_seq}")
+                self._notify_eu_dispatcher()
             elif diff < 0:
-                for _ in range(abs(diff)):
-                    yield self.eu.get()
+                remove_count = abs(diff)
+                removed_now = self._remove_idle_servers(self.eu_servers, remove_count)
+                self.eu_pending_removals += remove_count - removed_now
             self.current_eu_capacity = new_cap
 
-    def passenger_process(self, flight_key: str, fln: str, ppos: str, pax_id: int, group: str, ees_status: str | None = None, transport_mode: str = "Walk"):
+    def passenger_process(self, flight_key: str, fln: str, ppos: str, pax_id: int, group: str, transport_mode: str = "Walk"):
         """
         Der Hauptprozess für einen einzelnen Passagier.
 
@@ -521,7 +566,6 @@ class BorderControlModel:
             pax_id=pax_id,
             group=group,
             transport_mode=transport_mode,
-            ees_status=ees_status,
             arrival_min=arrival,
             exit_min=arrival,
             system_min=0.0,
@@ -554,6 +598,8 @@ class BorderControlModel:
         pr.exit_min = float(self.env.now)
         pr.system_min = pr.exit_min - pr.arrival_min
         self.results.append(pr)
+        if len(self.results) == self.expected_passengers and not self.all_passengers_done.triggered:
+            self.all_passengers_done.succeed()
 
     def control_summary(self) -> dict:
         """
@@ -569,13 +615,6 @@ class BorderControlModel:
         # 1) counts je Gruppe
         c_group = Counter(r.group for r in self.results)
 
-        # 2) counts je (Gruppe, EES-Status) für V
-        c_group_ees = Counter(
-            (r.group, r.ees_status)
-            for r in self.results
-            if r.group == "TCN_V"
-        )
-
         # 3) counts je Flug
         c_flight = Counter(r.flight_key for r in self.results)
 
@@ -587,16 +626,6 @@ class BorderControlModel:
         for g, n in sorted(c_group.items(), key=lambda x: (-x[1], x[0])):
             table_by_group.append({
                 "group": g,
-                "count": n,
-                "share_pct": round(pct(n), 1),
-            })
-
-        # EES-Split (nur V)
-        table_by_group_ees = []
-        for (g, ees), n in sorted(c_group_ees.items(), key=lambda x: (-x[1], x[0][0], str(x[0][1]))):
-            table_by_group_ees.append({
-                "group": g,
-                "ees_status": ees,
                 "count": n,
                 "share_pct": round(pct(n), 1),
             })
@@ -624,7 +653,6 @@ class BorderControlModel:
         return {
             "total": total,
             "by_group": table_by_group,
-            "by_group_ees": table_by_group_ees,
             "by_flight": [{"flight_key": k, "count": v} for k, v in sorted(c_flight.items())],
             "mix_check": table_mix_check,
         }
@@ -684,16 +712,8 @@ def schedule_flights(env: simpy.Environment, model: BorderControlModel, flights:
 
                 walk_delay = _walk_time_min(model.cfg, model.rng, distance_m)
                 
-                # EES-Status für TCN-Gruppen
-                ees_status = None
-                if g in ("TCN_V", "TCN_AT"):
-                    if model.rng.random() < model.cfg.ees_registered_share:
-                        ees_status = "EES_registered"
-                    else:
-                        ees_status = "EES_unregistered"
-                
                 total_delay = cumulative_deboard_delay_min + walk_delay
-                env.process(spawn_after(total_delay, f["flight_key"], f["fln"], ppos, i, g, ees_status, transport_mode))
+                env.process(spawn_after(total_delay, f["flight_key"], f["fln"], ppos, i, g, transport_mode))
         else:
             # Passagiere werden mit dem Bus gefahren
             transport_mode = "Bus"
@@ -724,17 +744,14 @@ def schedule_flights(env: simpy.Environment, model: BorderControlModel, flights:
                     g = groups[i]
                     pax_id = i + 1
                     
-                    ees_status = None
-                    if g in ("TCN_V", "TCN_AT"):
-                        ees_status = "EES_registered" if model.rng.random() < model.cfg.ees_registered_share else "EES_unregistered"
-                    env.process(spawn_after(bus_arrival_at_border_min, f["flight_key"], f["fln"], ppos, pax_id, g, ees_status, transport_mode))
+                    env.process(spawn_after(bus_arrival_at_border_min, f["flight_key"], f["fln"], ppos, pax_id, g, transport_mode))
 
                 # Abfahrtszeit für die nächste Iteration (Bus) aktualisieren.
                 last_bus_departure_time_min = current_bus_departure_time_min
 
-    def spawn_after(delay: float, flight_key: str, fln: str, ppos: str, pax_id: int, group: str, ees_status: str | None, transport_mode: str):
+    def spawn_after(delay: float, flight_key: str, fln: str, ppos: str, pax_id: int, group: str, transport_mode: str):
         yield env.timeout(delay)
-        env.process(model.passenger_process(flight_key, fln, ppos, pax_id, group, ees_status, transport_mode))
+        env.process(model.passenger_process(flight_key, fln, ppos, pax_id, group, transport_mode))
 
     for f in flights:
         env.process(flight_proc(f))
@@ -767,17 +784,12 @@ def run_simulation(
     """
     rng = random.Random(seed)
     env = simpy.Environment()
-    model = BorderControlModel(env, cfg, rng, t0)
+    expected_passengers = sum(int(f["spax"]) for f in flights)
+    model = BorderControlModel(env, cfg, rng, t0, expected_passengers=expected_passengers)
     schedule_flights(env, model, flights)
 
     if until_min is None:
-        max_arr = max((f["t_arr_min"] for f in flights), default=0.0)
-        until_min = (
-            max_arr
-            + cfg.deboard_offset_min
-            + 60.0  # Generischer Puffer für die maximale Deboarding-Dauer
-            + 240.0 # Generischer Puffer für Prozess- und Wartezeiten
-        )
-
-    env.run(until=until_min)
+        env.run(until=model.all_passengers_done)
+    else:
+        env.run(until=until_min)
     return model

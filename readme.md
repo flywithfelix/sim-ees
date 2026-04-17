@@ -1,19 +1,21 @@
-# SIM EES - Simulation des EES-Prozesses am Flughafen
+﻿# SIM EES - Simulation des EES-Prozesses am Flughafen
 
 Eine Streamlit-basierte, diskrete Ereignissimulation zur Analyse und Visualisierung von Passagierströmen an der Grenzkontrolle unter Berücksichtigung des Entry/Exit Systems (EES).
 
-## 🌟 Features
+## Features
 
-*   **Flugplan-basiert**: Simuliert Passagierankünfte basierend auf einem importierbaren Flugplan (CSV/XLSX).
-*   **Detaillierte Passagiermodellierung**: Unterscheidet zwischen verschiedenen Passagiergruppen (`Easypass`, `EU-manual`, `TCN-AT`, `TCN-V`) mit jeweils eigenen Prozesspfaden.
-*   **Flexible Konfiguration**: Nahezu alle Simulationsparameter (Prozesszeiten, Passagiermix, Kapazitäten, Gehgeschwindigkeiten etc.) sind über die UI einstellbar.
-*   **Iterative Kapazitätsanpassung**: Ein "Passbox"-Modus ermittelt iterativ die benötigten Schalterkapazitäten, um ein definiertes Service-Level (maximale Wartezeit) zu erreichen.
-*   **Umfassende Visualisierung**: Interaktive Diagramme (Zeitreihen, Heatmaps) und Tabellen zur detaillierten Analyse der Ergebnisse (Wartezeiten, Warteschlangenlängen, KPIs).
-*   **Speichern & Laden**: Benutzereinstellungen können gespeichert und wieder geladen werden, um die Reproduzierbarkeit zu gewährleisten.
+*   **Flugplan-basiert**: Simuliert Passagierankünfte auf Basis importierter Flugplandaten (`.csv` oder `.xlsx`).
+*   **API-Import für Flugdaten**: Lädt Ankunftsdaten über die Hamburg-Airport-API und bereitet sie direkt für die Simulation auf.
+*   **Gespeicherte Runs wieder öffnen**: Bereits gespeicherte Ergebnisse aus dem Ordner `runs` können später zur Ansicht erneut geladen werden.
+*   **Detaillierte Passagiermodellierung**: Unterscheidet zwischen verschiedenen Passagiergruppen (`Easypass`, `EU_MANUAL`, `TCN_AT`, `TCN_V`) mit jeweils eigenen Prozesspfaden.
+*   **Fachlich fokussierte Konfiguration**: Zentrale Stellgrößen wie Service Level, Passbox-Kapazitäten, SSS-Nutzung und globale Prozesszeit-Skalierung sind über die UI steuerbar.
+*   **Iterative Kapazitätsanpassung**: Ein "Passbox"-Modus ermittelt iterativ die benötigten Schalterkapazitäten, um ein definiertes Service-Level zu erreichen.
+*   **Umfassende Visualisierung**: Interaktive Diagramme und Tabellen zur Analyse von Wartezeiten, Auslastung, Kapazitäten und Passagieraufkommen.
 
-## 🚀 Installation & Start
+## Installation & Start
 
 ### Voraussetzungen
+
 *   Python 3.9+
 
 ### Setup
@@ -24,102 +26,154 @@ Eine Streamlit-basierte, diskrete Ereignissimulation zur Analyse und Visualisier
     cd <repository-ordner>
     ```
 
-2.  **Virtuelle Umgebung erstellen (empfohlen)**:
+2.  **Virtuelle Umgebung erstellen**:
     ```bash
     python -m venv .venv
-    source .venv/bin/activate  # Auf Windows: .venv\Scripts\activate
+    source .venv/bin/activate  # Windows: .venv\Scripts\activate
     ```
 
 3.  **Abhängigkeiten installieren**:
-    Erstellen Sie eine `requirements.txt`-Datei mit folgendem Inhalt und installieren Sie diese.
-
-    **requirements.txt**:
-    ```
-    simpy>=4.0,<5.0
-    pandas>=1.5,<3.0
-    streamlit>=1.25,<2.0
-    plotly>=5.15,<6.0
-    openpyxl>=3.1,<4.0
-    ```
-
     ```bash
     pip install -r requirements.txt
     ```
 
-### Anwendung starten
+4.  **Umgebungsvariablen konfigurieren**:
+    Für den API-Import wird ein Subscription Key benötigt. Legen Sie eine `.env` im Projektverzeichnis an, z.B. auf Basis von `.env.example`.
 
-Führen Sie den folgenden Befehl im Hauptverzeichnis des Projekts aus:
+    ```env
+    HAMBURG_AIRPORT_SUBSCRIPTION_KEY=<ihr-subscription-key>
+    ```
+
+### Anwendung starten
 
 ```bash
 streamlit run Simulation.py
 ```
 
-Die Anwendung sollte sich nun in Ihrem Webbrowser öffnen.
+## Benutzung
 
-## 📖 Benutzung
+1.  **Importquelle wählen**: Im Importbereich kann zwischen `Datei-Import`, `API-Import` und `Gespeicherter Run` gewechselt werden. Standardmäßig ist `API-Import` vorausgewählt.
+2.  **Datei-Import**: Flugplan-Datei (CSV oder XLSX) hochladen. Das Format wird automatisch erkannt.
+3.  **API-Import**: Kalendertag wählen und Daten über den fest hinterlegten Hamburg-Airport-Endpunkt laden. Die Flüge werden danach direkt in das interne Format überführt.
+4.  **Flüge auswählen**: Nach Datei- oder API-Import werden alle gültigen Flüge in einer Tabelle angezeigt und können über `Aktiv` ein- oder ausgeschlossen werden. Für nicht fest zugeordnete Flüge kann `GKS` angepasst werden.
+5.  **Einstellungen anpassen**: Die wichtigsten Simulationsparameter werden in der linken Seitenleiste gesetzt.
+6.  **Simulation starten**: Über `▶️ Simulation starten` in der Seitenleiste.
+7.  **Ergebnisse analysieren**: Nach Abschluss der Simulation werden KPIs, Diagramme und Tabellen im Hauptbereich angezeigt.
+8.  **Run speichern**: Ein abgeschlossener Lauf kann im Ordner `runs` gespeichert und später erneut geöffnet werden.
 
-1.  **Flugplan hochladen**: Ziehen Sie eine Flugplan-Datei (CSV oder XLSX) in den Upload-Bereich. Das Format wird automatisch erkannt. Stellen Sie sicher, dass die Datei die benötigten Spalten enthält.
-2.  **Flüge auswählen**: In der Tabelle werden alle gültigen Flüge angezeigt. Standardmäßig sind alle Flüge für die Simulation aktiviert. Sie können einzelne Flüge über die Checkbox "Aktiv" deaktivieren.
-3.  **Einstellungen anpassen**: Öffnen Sie die Expander in der linken Seitenleiste, um Simulationsparameter wie den Passagiermix, Kapazitäten, Prozesszeiten und Service-Level-Ziele anzupassen.
-4.  **Simulation starten**: Klicken Sie auf den Button "▶️ Simulation starten" oben in der Seitenleiste.
-5.  **Ergebnisse analysieren**: Nach Abschluss der Simulation werden die Ergebnisse im Hauptbereich angezeigt, unterteilt in KPIs, Diagramme und detaillierte Tabellen.
+## API-Import
 
-## 👨‍💻 Für Entwickler
+Der API-Import verwendet fest den Endpunkt `https://rest.api.hamburg-airport.de/v2/flights/arrivals`.
+
+Verhalten:
+
+*   Vor dem Laden wird ein Kalendertag gewählt.
+*   Die API-Antwort wird anschließend auf diesen Tag gefiltert.
+*   Die geladenen Flüge werden in das interne Simulationsformat überführt.
+*   Eine Simulation ist direkt auf Basis der API-Daten möglich.
+
+## Gespeicherte Runs
+
+Gespeicherte Runs werden im Ordner `runs` abgelegt.
+
+Gespeichert werden je nach Lauf u. a.:
+
+*   Passenger-Details
+*   Flugübersicht
+*   Gruppenübersicht
+*   Kapazitätstabellen für T1 und T2
+*   bei neueren Läufen zusätzlich Queue-Zeitreihen
+
+Über den Importmodus `Gespeicherter Run` kann ein gespeicherter Lauf später wieder geöffnet werden.
+
+Wichtig:
+
+*   Gespeicherte Runs werden nur angezeigt.
+*   Es findet keine neue Simulation aus den gespeicherten Ergebnisdateien statt.
+*   Ältere Runs enthalten unter Umständen noch keine Queue-Zeitreihen und können deshalb nicht jede Visualisierung vollständig darstellen.
+
+## Ergebnisse
+
+Die Anwendung zeigt nach einem Lauf unter anderem:
+
+*   Wartezeit-Diagramme für TCN sowie EU/Easypass
+*   Heatmaps für P95-Wartezeiten
+*   KPIs je Terminal
+*   Bus-Ankünfte
+*   ermittelte Kapazitäten je Intervall
+*   Flugübersicht
+*   Gruppenübersicht
+*   Detaildaten auf Passagierebene
+
+## Für Entwickler
 
 ### Projektstruktur
 
-Das Projekt ist modular aufgebaut, um die Wartbarkeit zu erleichtern:
-
-*   `Simulation.py`: Der Haupteinstiegspunkt der Streamlit-Anwendung. Enthält die UI-Logik, die Orchestrierung der Simulationsläufe und die Darstellung der Ergebnisse.
-*   `engine.py`: Das Herzstück der Simulation. Definiert die `simpy`-basierten Prozesse für Passagiere, die Ressourcenverwaltung und die Datenstrukturen (`SimConfig`, `PassengerResult`).
-*   `settings_sidebar.py`: Rendert die komplette Einstellungs-Seitenleiste und deren Logik.
-*   `plotting.py`: Enthält alle Funktionen zur Erstellung der `plotly`-Diagramme.
-*   `session_state_init.py`: Verwaltet die Initialisierung, das Speichern und Laden des `st.session_state`.
-*   `passenger_data.py`: Eine zentrale Konfigurationsdatei für die meisten Standard-Simulationsparameter (z.B. Prozesszeiten, Kapazitäten, Passagiermix).
-*   `flight_allocation.py`, `ppos_distances.py`, `typ4_defaults.py`: Enthalten statische Mapping-Daten für die Terminalzuweisung, Gehdistanzen und Flugzeugtypen.
+*   `Simulation.py`: Haupteinstiegspunkt der Streamlit-Anwendung.
+*   `engine.py`: Kern der Simulation mit `simpy`-basierten Prozessen.
+*   `settings_sidebar.py`: UI-Logik der Einstellungs-Seitenleiste.
+*   `plotting.py`: Erstellung der Diagramme.
+*   `parameter.py`: Zentrale Standardkonfigurationen.
+*   `typ4_defaults.py`: Mapping-Daten für Flugzeugtypen und Default-Pax.
+*   `pages/1_Hilfe.py`: Hilfeseite für Anwender.
+*   `runs/`: Ablage gespeicherter Simulationsläufe.
+*   `.env`: Lokale Umgebungsvariablen wie der API-Subscription-Key.
+*   `.env.example`: Vorlage für die benötigten Umgebungsvariablen.
 
 ### Wichtige Abhängigkeiten
 
-*   **Streamlit**: Für das Web-Framework und die UI-Komponenten.
-*   **SimPy**: Für die diskrete Ereignissimulation.
-*   **Pandas**: Für die Datenmanipulation, insbesondere des Flugplans und der Ergebnis-DataFrames.
-*   **Plotly**: Für die Erstellung der interaktiven Diagramme.
+*   **Streamlit**: Web-Framework und UI.
+*   **SimPy**: Diskrete Ereignissimulation.
+*   **Pandas**: Datenverarbeitung.
+*   **Plotly**: Interaktive Diagramme.
+*   **python-dotenv**: Laden lokaler Umgebungsvariablen aus `.env`.
 
 ### Konfiguration
 
-Die meisten "magischen Zahlen" und Standardwerte sind in `passenger_data.py` zentralisiert. Wenn Sie grundlegende Annahmen der Simulation (z.B. die durchschnittliche Prozesszeit am EU-Schalter) ändern möchten, ist dies der richtige Ort.
+Die meisten Standardwerte sind in `parameter.py` zentralisiert. Dazu gehören unter anderem:
 
-## 📋 Eingabedaten: Flugplan
+*   Standardwerte für Prozesszeiten
+*   Service-Level-Vorgaben
+*   minimale und maximale Kapazitäten
+*   Session-State-Defaults wie die vorausgewählte Importquelle
+
+Für den API-Import wird zusätzlich die Umgebungsvariable `HAMBURG_AIRPORT_SUBSCRIPTION_KEY` aus der `.env` gelesen.
+
+## Eingabedaten: Flugplan
 
 Die Simulationslogik ist auf ein bestimmtes Format der Flugplandatei angewiesen.
 
-**Pflichtspalten**:
+### Pflichtspalten
 
-| Spalte | Beschreibung                                                                                              | Beispiel      |
-| :------- | :-------------------------------------------------------------------------------------------------------- | :------------ |
-| `BIBT`   | Block-In-Zeit (Ankunftszeit des Fluges). Format: `TT.MM.JJJJ HH:MM`                                        | `01.01.2024 06:30` |
-| `FLN`    | Flugnummer.                                                                                               | `LH2024`      |
-| `PPOS`   | Parkposition. Wird für die Terminalzuweisung und Gehdistanz verwendet.                                    | `01A`         |
-| `PK`     | Kennzeichen, ob der Flug Passagiere für die Grenzkontrolle hat. Muss "JA" (oder Äquivalent) sein.         | `JA`          |
-| `EPAX`   | Erwartete Passagieranzahl. Wird verwendet, wenn `APAX` nicht verfügbar ist.                               | `150`         |
-| `Typ4`   | ICAO-Code des Flugzeugtyps. Dient als Fallback zur Bestimmung der Passagierzahl.                          | `A320`        |
-| `T`      | Terminal-Information aus der Quelldatei (wird aktuell nicht primär genutzt, aber erwartet).               | `1`           |
+| Spalte | Beschreibung | Beispiel |
+| :-- | :-- | :-- |
+| `BIBT` | Block-In-Zeit des Fluges. Format: `TT.MM.JJJJ HH:MM` | `01.01.2024 06:30` |
+| `FLN` | Flugnummer | `LH2024` |
+| `PPOS` | Parkposition | `01A` |
+| `PK` | Kennzeichen, ob der Flug Passagiere für die Grenzkontrolle hat | `JA` |
+| `EPAX` | Erwartete Passagieranzahl | `150` |
+| `Typ4` | ICAO-Code des Flugzeugtyps | `A320` |
+| `T` | Terminal-Information aus der Quelldatei | `1` |
 
-**Optionale Spalten**:
+### Optionale Spalten
 
-| Spalte  | Beschreibung                                                                                              | Beispiel |
-| :------ | :-------------------------------------------------------------------------------------------------------- | :------- |
-| `APAX`  | Tatsächliche Passagieranzahl. Hat Priorität vor `EPAX` und dem Fallback über `Typ4`.                        | `145`    |
-| `ADEP3` | Herkunftsflughafen (ICAO-Code).                                                                             | `EDDF`   |
+| Spalte | Beschreibung | Beispiel |
+| :-- | :-- | :-- |
+| `APAX` | Tatsächliche Passagieranzahl | `145` |
+| `ADEP3` | Herkunftsflughafen (ICAO-Code) | `EDDF` |
 
-**Logik zur Passagierzahl (`SPAX`)**:
+### Logik zur Passagierzahl (`SPAX`)
 
 Die finale Passagierzahl für die Simulation (`SPAX`) wird nach folgender Priorität ermittelt:
-1.  Wert aus `APAX` (falls vorhanden und gültig).
-2.  Wert aus `EPAX` (falls vorhanden und gültig).
-3.  Fallback auf einen Standardwert basierend auf dem `Typ4` aus `typ4_defaults.py`.
-4.  Wenn alles fehlschlägt, wird ein generischer Standardwert von 100 verwendet.
+
+1.  Wert aus `APAX`
+2.  Wert aus `EPAX`
+3.  Fallback auf einen Standardwert basierend auf `Typ4`
+4.  Generischer Standardwert `100`
+
+Wenn also keine belastbare Passagierzahl in der Quelle vorhanden ist, verwendet die Anwendung einen typbezogenen Ersatzwert.
 
 ---
 
-Bei Fragen oder Problemen können Sie ein Issue im Repository erstellen. Pull Requests zur Verbesserung der Anwendung sind willkommen!
+Bei Fragen oder Problemen können Sie ein Issue im Repository erstellen. Pull Requests zur Verbesserung der Anwendung sind willkommen.
+
